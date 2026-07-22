@@ -1,73 +1,78 @@
-# OpenAI-Compatible API Server for Hermes Agent
+# Hermes Agent 的 OpenAI 兼容 API Server
 
-## Motivation
+> **文档状态：历史设计计划。** 本文用于保留早期设计背景，不覆盖当前源码、
+> `AGENTS.md`、配置 Schema 或现有 API 契约。实现前必须先确认当前 `main` 是否已经
+> 提供相关能力。行为设置属于 `config.yaml`，`.env` 只保存 API key 等秘密。
 
-Every major chat frontend (Open WebUI 126k★, LobeChat 73k★, LibreChat 34k★,
-AnythingLLM 56k★, NextChat 87k★, ChatBox 39k★, Jan 26k★, HF Chat-UI 8k★,
-big-AGI 7k★) connects to backends via the OpenAI-compatible REST API with
-SSE streaming. By exposing this endpoint, hermes-agent becomes instantly
-usable as a backend for all of them — no custom adapters needed.
+## 动机
 
-## What It Enables
+Open WebUI、LobeChat、LibreChat、AnythingLLM、NextChat、ChatBox、Jan、HF Chat-UI、
+big-AGI 等主流聊天前端都能通过 OpenAI 兼容 REST API 和 SSE 流连接后端。暴露该
+接口后，Hermes Agent 可以直接作为这些前端的后端，不需要为每个前端编写适配器。
 
+## 能力范围
+
+```text
+Open WebUI / LobeChat / LibreChat / 其他 OpenAI 客户端
+                         |
+                         | POST /v1/chat/completions
+                         | Authorization: Bearer <key>
+                         v
+                 Hermes Agent Gateway/API Server
+                         |
+                         +-- 非流式 JSON
+                         +-- SSE 流式响应
 ```
-┌──────────────────┐
-│  Open WebUI      │──┐
-│  LobeChat        │  │    POST /v1/chat/completions
-│  LibreChat       │  ├──► Authorization: Bearer <key>     ┌─────────────────┐
-│  AnythingLLM     │  │    {"messages": [...]}             │  hermes-agent   │
-│  NextChat        │  │                                    │  gateway        │
-│  Any OAI client  │──┘    ◄── SSE streaming response      │  (API server)   │
-└──────────────────┘                                        └─────────────────┘
-```
 
-A user would:
-1. Set `API_SERVER_ENABLED=true` in `~/.hermes/.env`
-2. Run `hermes gateway` (API server starts alongside Telegram/Discord/etc.)
-3. Point Open WebUI (or any frontend) at `http://localhost:8642/v1`
-4. Chat with hermes-agent through any OpenAI-compatible UI
+用户流程：
 
-## Endpoints
+1. 在 `config.yaml` 中启用 API Server 并设置 host/port。
+2. 密钥通过受保护配置或秘密环境变量提供。
+3. 运行 `hermes gateway` 或当前版本提供的等价服务入口。
+4. 将聊天前端指向 `http://localhost:8642/v1`。
 
-| Method | Path | Purpose |
-|--------|------|---------|
-| POST | `/v1/chat/completions` | Chat with the agent (streaming + non-streaming) |
-| GET | `/v1/models` | List available "models" (returns hermes-agent as a model) |
-| GET | `/health` | Health check |
+## 端点
 
-## Architecture
+| 方法 | 路径 | 用途 |
+| --- | --- | --- |
+| POST | `/v1/chat/completions` | Chat Completions，支持流式和非流式 |
+| POST | `/v1/responses` | Responses API 与服务端状态链 |
+| GET | `/v1/models` | 返回可用模型 |
+| GET | `/health` | 健康检查 |
 
-### Option A: Gateway Platform Adapter (recommended)
+## 架构方案
 
-Create `gateway/platforms/api_server.py` as a new platform adapter that
-extends `BasePlatformAdapter`. This is the cleanest approach because:
+### 方案 A：Gateway 平台适配器（原计划推荐）
 
-- Reuses all gateway infrastructure (session management, auth, context building)
-- Runs in the same async loop as other adapters
-- Gets message handling, interrupt support, and session persistence for free
-- Follows the established pattern (like Telegram, Discord, etc.)
-- Uses `aiohttp.web` (already a dependency) for the HTTP server
+在 `gateway/platforms/api_server.py` 中实现 `BasePlatformAdapter` 适配器。
 
-The adapter would start an `aiohttp.web.Application` server in `connect()`
-and route incoming HTTP requests through the standard `handle_message()` pipeline.
+优点：
 
-### Option B: Standalone Component
+- 复用 Gateway 的会话、认证、上下文和中断基础设施；
+- 与其他平台适配器运行在同一异步循环中；
+- 复用消息处理和会话持久化；
+- 使用已有依赖 `aiohttp.web`。
 
-A separate HTTP server class in `gateway/api_server.py` that creates its own
-AIAgent instances directly. Simpler but duplicates session/auth logic.
+适配器在 `connect()` 中启动 `aiohttp.web.Application`，并把请求路由到标准消息处理管线。
 
-**Recommendation: Option A** — fits the existing architecture, less code to
-maintain, gets all gateway features for free.
+### 方案 B：独立组件
 
-## Request/Response Format
+在 `gateway/api_server.py` 中创建独立 HTTP Server，直接构造 `AIAgent`。
 
-### Chat Completions (non-streaming)
+该方案表面简单，但会重复会话和认证逻辑，因此只有在当前 Gateway 架构不再适用时
+才应重新评估。
 
-```
+## 请求与响应格式
+
+### 非流式 Chat Completions
+
+```http
 POST /v1/chat/completions
 Authorization: Bearer hermes-api-key-here
 Content-Type: application/json
+```
 
+```json
 {
   "model": "hermes-agent",
   "messages": [
@@ -79,7 +84,8 @@ Content-Type: application/json
 }
 ```
 
-Response:
+响应示例：
+
 ```json
 {
   "id": "chatcmpl-abc123",
@@ -88,10 +94,7 @@ Response:
   "model": "hermes-agent",
   "choices": [{
     "index": 0,
-    "message": {
-      "role": "assistant",
-      "content": "Here are the files in the current directory:\n..."
-    },
+    "message": {"role": "assistant", "content": "..."},
     "finish_reason": "stop"
   }],
   "usage": {
@@ -102,30 +105,27 @@ Response:
 }
 ```
 
-### Chat Completions (streaming)
+### 流式 Chat Completions
 
-Same request with `"stream": true`. Response is SSE:
+请求设置 `"stream": true`，响应使用 SSE：
 
-```
+```text
 data: {"id":"chatcmpl-abc123","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}
 
-data: {"id":"chatcmpl-abc123","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"Here "},"finish_reason":null}]}
-
-data: {"id":"chatcmpl-abc123","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"are "},"finish_reason":null}]}
+data: {"id":"chatcmpl-abc123","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}]}
 
 data: {"id":"chatcmpl-abc123","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
 
 data: [DONE]
 ```
 
-### Models List
+### 模型列表
 
-```
+```http
 GET /v1/models
 Authorization: Bearer hermes-api-key-here
 ```
 
-Response:
 ```json
 {
   "object": "list",
@@ -138,154 +138,97 @@ Response:
 }
 ```
 
-## Key Design Decisions
+## 关键设计决策
 
-### 1. Session Management
+### 会话管理
 
-The OpenAI API is stateless — each request includes the full conversation.
-But hermes-agent sessions have persistent state (memory, skills, tool context).
+OpenAI API 默认是无状态协议，每次请求携带完整对话；Hermes 会话则可能包含 memory、
+skill 和工具上下文。
 
-**Approach: Hybrid**
-- Default: Stateless. Each request is independent. The `messages` array IS
-  the conversation. No session persistence between requests.
-- Opt-in persistent sessions via `X-Session-ID` header. When provided, the
-  server maintains session state across requests (conversation history,
-  memory context, tool state). This enables richer agent behavior.
-- The session ID also enables interrupt support — a subsequent request with
-  the same session ID while one is running triggers an interrupt.
+历史计划采用混合方式：
 
-### 2. Streaming
+- 默认无状态：`messages` 数组就是完整对话；
+- 通过 `X-Session-ID` 显式启用持久会话；
+- 同一 session 正在运行时，新请求可以触发中断；
+- Responses API 使用 `previous_response_id` 恢复服务端保存的完整内部上下文。
 
-The agent's `run_conversation()` is synchronous and returns the full response.
-For real SSE streaming, we need to emit chunks as they're generated.
+当前实现如果已经采用不同的 session contract，应以现行实现和测试为准。
 
-**Phase 1 (MVP):** Run agent in a thread, return the complete response as
-a single SSE chunk + `[DONE]`. This works with all frontends — they just see
-a fast single-chunk response. Not true streaming but functional.
+### 流式响应
 
-**Phase 2:** Add a response callback to AIAgent that emits text chunks as the
-LLM generates them. The API server captures these via a queue and streams them
-as SSE events. This gives real token-by-token streaming.
+- 第一阶段可以返回单个 SSE 内容块加 `[DONE]`，只满足协议兼容，不是真实 token 流。
+- 后续阶段通过线程安全队列接收 `AIAgent` 的文本增量，并实时写入 SSE。
+- 工具调用进度是否透明必须显式启用，默认只返回最终助手文本。
 
-**Phase 3:** Stream tool execution progress too — emit tool call/result events
-as the agent works, giving frontends visibility into what the agent is doing.
+### 工具透明度
 
-### 3. Tool Transparency
+- **不透明模式（默认）**：工具调用只在服务端运行，前端只看到最终结果。
+- **透明模式（显式启用）**：以 OpenAI 格式输出 tool call/result，适用于 Agent 感知前端。
 
-Two modes:
-- **Opaque (default):** Frontends see only the final response. Tool calls
-  happen server-side and are invisible. Best for general-purpose UIs.
-- **Transparent (opt-in via header):** Tool calls are emitted as OpenAI-format
-  tool_call/tool_result messages in the stream. Useful for agent-aware frontends.
+### 认证
 
-### 4. Authentication
+- 使用 `Authorization: Bearer <key>`；
+- 密钥属于秘密配置；
+- 只绑定 `127.0.0.1` 时，可以设计显式的本地无认证模式；
+- 非本地绑定必须强制认证并有真实安全边界测试。
 
-- Bearer token via `Authorization: Bearer <key>` header
-- Token configured via `API_SERVER_KEY` env var
-- Optional: allow unauthenticated local-only access (127.0.0.1 bind)
-- Follows the same pattern as other platform adapters
+### 模型映射
 
-### 5. Model Mapping
+前端可以发送 `"model": "hermes-agent"`，实际模型由服务端配置决定。允许客户端覆盖
+模型属于行为配置，必须通过 `config.yaml` 显式开启，并验证 Provider、权限和预算影响。
 
-Frontends send `"model": "hermes-agent"` (or whatever). The actual LLM model
-used is configured server-side in config.yaml. The API server maps any
-requested model name to the configured hermes-agent model.
-
-Optionally, allow model passthrough: if the frontend sends
-`"model": "anthropic/claude-sonnet-4"`, the agent uses that model. Controlled
-by a config flag.
-
-## Configuration
+## 配置示例
 
 ```yaml
-# In config.yaml
 api_server:
   enabled: true
   port: 8642
-  host: "127.0.0.1"        # localhost only by default
-  key: "your-secret-key"   # or via API_SERVER_KEY env var
-  allow_model_override: false  # let clients choose the model
-  max_concurrent: 5         # max simultaneous requests
+  host: "127.0.0.1"
+  allow_model_override: false
+  max_concurrent: 5
 ```
 
-Environment variables:
-```bash
-API_SERVER_ENABLED=true
-API_SERVER_PORT=8642
-API_SERVER_HOST=127.0.0.1
-API_SERVER_KEY=your-secret-key
-```
+密钥不得作为普通行为配置提交到仓库；通过当前版本支持的秘密配置机制提供。
 
-## Implementation Plan
+## 历史实施阶段
 
-### Phase 1: MVP (non-streaming) — PR
+### 第一阶段：非流式 MVP
 
-1. `gateway/platforms/api_server.py` — new adapter
-   - aiohttp.web server with endpoints:
-     - `POST /v1/chat/completions` — Chat Completions API (universal compat)
-     - `POST /v1/responses` — Responses API (server-side state, tool preservation)
-     - `GET /v1/models` — list available models
-     - `GET /health` — health check
-   - Bearer token auth middleware
-   - Non-streaming responses (run agent, return full result)
-   - Chat Completions: stateless, messages array is the conversation
-   - Responses API: server-side conversation storage via previous_response_id
-     - Store full internal conversation (including tool calls) keyed by response ID
-     - On subsequent requests, reconstruct full context from stored chain
-   - Frontend system prompt layered on top of hermes-agent's core prompt
+1. 增加 API Server 适配器和端点。
+2. 增加 Bearer token 认证中间件。
+3. Chat Completions 使用请求 `messages` 作为对话。
+4. Responses API 保存包含工具消息的内部会话链。
+5. 增加真实导入、认证、会话和协议格式测试。
 
-2. `gateway/config.py` — add `Platform.API_SERVER` enum + config
+### 第二阶段：SSE Streaming
 
-3. `gateway/run.py` — register adapter in `_create_adapter()`
+1. 为两个端点增加真实增量流。
+2. 通过 callback queue 桥接 Agent 线程和异步 SSE writer。
+3. 客户端断开时取消运行并清理资源。
+4. 验证 Chat Completions 与 Responses 的不同事件格式。
 
-4. Tests in `tests/gateway/test_api_server.py`
+### 第三阶段：增强能力
 
-### Phase 2: SSE Streaming
+1. 工具调用透明模式。
+2. 模型覆盖门禁。
+3. 并发请求限制。
+4. 使用量与速率限制。
+5. 浏览器前端所需的受控 CORS。
+6. `GET /v1/responses/{id}` 与 `DELETE /v1/responses/{id}`。
 
-1. Add response streaming to both endpoints
-   - Chat Completions: `choices[0].delta.content` SSE format
-   - Responses API: semantic events (response.output_text.delta, etc.)
-   - Run agent in thread, collect output via callback queue
-   - Handle client disconnect (cancel agent)
+## 预期变更区域
 
-2. Add `stream_callback` parameter to `AIAgent.run_conversation()`
+| 文件 | 历史计划中的变化 |
+| --- | --- |
+| `gateway/platforms/api_server.py` | API Server 适配器 |
+| `gateway/config.py` | 平台和配置定义 |
+| `gateway/run.py` | 适配器注册 |
+| `tests/gateway/test_api_server.py` | 协议、认证、会话和流式测试 |
+| `cli-config.yaml.example` | `api_server` 配置示例 |
+| 用户文档 | 平台入口和连接方式 |
 
-### Phase 3: Enhanced Features
+## 兼容目标
 
-1. Tool call transparency mode (opt-in)
-2. Model passthrough/override
-3. Concurrent request limiting
-4. Usage tracking / rate limiting
-5. CORS headers for browser-based frontends
-6. GET /v1/responses/{id} — retrieve stored response
-7. DELETE /v1/responses/{id} — delete stored response
-
-## Files Changed
-
-| File | Change |
-|------|--------|
-| `gateway/platforms/api_server.py` | NEW — main adapter (~300 lines) |
-| `gateway/config.py` | Add Platform.API_SERVER + config (~20 lines) |
-| `gateway/run.py` | Register adapter in _create_adapter() (~10 lines) |
-| `tests/gateway/test_api_server.py` | NEW — tests (~200 lines) |
-| `cli-config.yaml.example` | Add api_server section |
-| `README.md` | Mention API server in platform list |
-
-## Compatibility Matrix
-
-Once implemented, hermes-agent works as a drop-in backend for:
-
-| Frontend | Stars | How to Connect |
-|----------|-------|---------------|
-| Open WebUI | 126k | Settings → Connections → Add OpenAI API, URL: `http://localhost:8642/v1` |
-| NextChat | 87k | BASE_URL env var |
-| LobeChat | 73k | Custom provider endpoint |
-| AnythingLLM | 56k | LLM Provider → Generic OpenAI |
-| Oobabooga | 42k | Already a backend, not a frontend |
-| ChatBox | 39k | API Host setting |
-| LibreChat | 34k | librechat.yaml custom endpoint |
-| Chatbot UI | 29k | Custom API endpoint |
-| Jan | 26k | Remote model config |
-| AionUI | 18k | Custom API endpoint |
-| HF Chat-UI | 8k | OPENAI_BASE_URL env var |
-| big-AGI | 7k | Custom endpoint |
+设计目标是让 Hermes Agent 作为 OpenAI 兼容后端连接 Open WebUI、NextChat、LobeChat、
+AnythingLLM、ChatBox、LibreChat、Jan、HF Chat-UI 和其他支持自定义 OpenAI endpoint 的
+客户端。每个客户端的具体配置应由当前用户文档维护，不在历史计划中冻结。

@@ -1,0 +1,120 @@
+name: HermesIOS
+
+options:
+  bundleIdPrefix: com.nousresearch.hermes
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+    CODE_SIGN_STYLE: Automatic
+    DEVELOPMENT_TEAM: ""
+    SWIFT_STRICT_CONCURRENCY: minimal
+
+targets:
+  HermesIOS:
+    type: application
+    platform: iOS
+    sources:
+      - path: HermesIOS
+      - path: ../apple-shared/HermesGatewayCore
+    info:
+      path: HermesIOS/Info.plist
+      properties:
+        CFBundleDisplayName: Hermes Chat
+        CFBundleURLTypes:
+          - CFBundleURLName: com.nousresearch.hermes.chat.ios
+            CFBundleURLSchemes:
+              - hermes-chat-ios
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        LSApplicationCategoryType: public.app-category.productivity
+        NSLocalNetworkUsageDescription: 连接局域网内用户明确配置的 Hermes 服务。
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.nousresearch.hermes.chat.ios
+        PRODUCT_MODULE_NAME: HermesIOS
+        PRODUCT_NAME: Hermes Chat iOS
+        MARKETING_VERSION: 0.1.0
+        CURRENT_PROJECT_VERSION: 1
+        GENERATE_INFOPLIST_FILE: NO
+  HermesIOSTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: HermesIOSTests
+      - path: ../apple-shared/HermesGatewayCoreTests
+    dependencies:
+      - target: HermesIOS
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.nousresearch.hermes.chat.ios.tests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Hermes Chat iOS.app/Hermes Chat iOS"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+
+  HermesIOSUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: HermesIOSUITests
+    dependencies:
+      - target: HermesIOS
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.nousresearch.hermes.chat.ios.uitests
+        GENERATE_INFOPLIST_FILE: YES
+
+schemes:
+  HermesIOS:
+    build:
+      targets:
+        HermesIOS: all
+        HermesIOSTests: [test]
+        HermesIOSUITests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      gatherCoverageData: true
+      targets:
+        - name: HermesIOSTests
+        - name: HermesIOSUITests
+  HermesIOSPromptE2E:
+    build:
+      targets:
+        HermesIOS: all
+        HermesIOSTests: [test]
+    test:
+      config: Debug
+      environmentVariables:
+        HERMES_APPLE_PROMPT_FIXTURE_URL: http://127.0.0.1:19142
+      targets:
+        - name: HermesIOSTests
+  HermesIOSE2E:
+    build:
+      targets:
+        HermesIOS: all
+        HermesIOSTests: [test]
+        HermesIOSUITests: [test]
+    test:
+      config: Debug
+      environmentVariables:
+        HERMES_IOS_E2E_URL: http://127.0.0.1:9127
+        HERMES_IOS_E2E_TOKEN: test-mvp-token
+        HERMES_APPLE_E2E_SESSION_ID: apple-e2e-resume-20260716
+      targets:
+        - name: HermesIOSTests
+        - name: HermesIOSUITests

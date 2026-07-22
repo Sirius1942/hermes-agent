@@ -1,0 +1,143 @@
+name: HermesChatMac
+
+options:
+  bundleIdPrefix: com.nousresearch.hermes
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    CODE_SIGN_STYLE: Automatic
+    DEVELOPMENT_TEAM: ""
+    ENABLE_HARDENED_RUNTIME: NO
+    SWIFT_STRICT_CONCURRENCY: minimal
+
+targets:
+  HermesChatMac:
+    type: application
+    platform: macOS
+    sources:
+      - path: HermesChatMac
+      - path: ../apple-shared/HermesGatewayCore
+    info:
+      path: HermesChatMac/Info.plist
+      properties:
+        CFBundleDisplayName: Hermes Chat
+        CFBundleURLTypes:
+          - CFBundleURLName: com.nousresearch.hermes.chat.macos
+            CFBundleURLSchemes:
+              - hermes-chat
+        LSApplicationCategoryType: public.app-category.productivity
+        NSPrincipalClass: NSApplication
+        NSHumanReadableCopyright: Copyright © 2026
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.nousresearch.hermes.chat.macos
+        PRODUCT_MODULE_NAME: HermesChatMac
+        PRODUCT_NAME: Hermes Chat
+        MARKETING_VERSION: 0.1.0
+        CURRENT_PROJECT_VERSION: 1
+        GENERATE_INFOPLIST_FILE: NO
+        ASSETCATALOG_COMPILER_APPICON_NAME: ""
+    scheme:
+      testTargets:
+        - HermesChatMacTests
+      gatherCoverageData: true
+
+  HermesChatMacTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: HermesChatMacTests
+      - path: ../apple-shared/HermesGatewayCoreTests
+    dependencies:
+      - target: HermesChatMac
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.nousresearch.hermes.chat.macos.tests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Hermes Chat.app/Contents/MacOS/Hermes Chat"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+
+  HermesChatMacUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    sources:
+      - path: HermesChatMacUITests
+    dependencies:
+      - target: HermesChatMac
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.nousresearch.hermes.chat.macos.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: HermesChatMac
+
+schemes:
+  HermesChatMac:
+    build:
+      targets:
+        HermesChatMac: all
+        HermesChatMacTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      gatherCoverageData: true
+      targets:
+        - name: HermesChatMacTests
+
+  HermesChatMacPromptE2E:
+    build:
+      targets:
+        HermesChatMac: all
+        HermesChatMacTests: [test]
+    test:
+      config: Debug
+      environmentVariables:
+        HERMES_APPLE_PROMPT_FIXTURE_URL: http://127.0.0.1:19142
+      targets:
+        - name: HermesChatMacTests
+
+  HermesChatMacE2E:
+    build:
+      targets:
+        HermesChatMac: all
+        HermesChatMacTests: [test]
+    test:
+      config: Debug
+      environmentVariables:
+        HERMES_MAC_E2E_URL: http://127.0.0.1:9127
+        HERMES_MAC_E2E_TOKEN: test-mvp-token
+        HERMES_APPLE_E2E_SESSION_ID: apple-e2e-resume-20260716
+      targets:
+        - name: HermesChatMacTests
+
+  HermesChatMacOwnedBackendE2E:
+    build:
+      targets:
+        HermesChatMac: all
+        HermesChatMacTests: [test]
+    test:
+      config: Debug
+      environmentVariables:
+        HERMES_MAC_OWNED_BACKEND_E2E: "1"
+        HERMES_MAC_OWNED_BACKEND_E2E_PORT: "19131"
+      targets:
+        - name: HermesChatMacTests
+
+  HermesChatMacUI:
+    build:
+      targets:
+        HermesChatMac: all
+        HermesChatMacUITests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      gatherCoverageData: true
+      targets:
+        - name: HermesChatMacUITests

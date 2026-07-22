@@ -1,705 +1,407 @@
-# Streaming LLM Response Support for Hermes Agent
+# Hermes Agent 的 LLM 流式响应支持
 
-## Overview
+> **文档状态：历史设计计划。** 本文保留早期流式响应方案，不覆盖当前源码、
+> `AGENTS.md`、配置 Schema 或已经落地的 Streaming 实现。开始开发前必须验证当前
+> `main` 的真实调用链。行为开关属于 `config.yaml`，不应作为新的非秘密 `.env` 设置。
 
-Add token-by-token streaming of LLM responses across all platforms. When enabled,
-users see the response typing out live instead of waiting for the full generation.
-Streaming is opt-in via config, defaults to off, and all existing non-streaming
-code paths remain intact as the default.
+## 概述
 
-## Design Principles
+目标是在各平台提供逐 token/文本增量的 LLM 响应。启用后，用户能实时看到回复，
+不必等待完整生成。流式能力应显式开启，关闭时保持现有非流式路径不变。
 
-1. **Feature-flagged**: `streaming.enabled: true` in config.yaml. Off by default.
-   When off, all existing code paths are unchanged — zero risk to current behavior.
-2. **Callback-based**: A simple `stream_callback(text_delta: str)` function injected
-   into AIAgent. The agent doesn't know or care what the consumer does with tokens.
-3. **Graceful degradation**: If the provider doesn't support streaming, or streaming
-   fails for any reason, silently fall back to the non-streaming path.
-4. **Platform-agnostic core**: The streaming mechanism in AIAgent works the same
-   regardless of whether the consumer is CLI, Telegram, Discord, or the API server.
+## 设计原则
 
----
+1. **配置门控**：通过 `config.yaml` 的 `streaming.enabled` 及按平台覆盖项控制。
+2. **Callback 驱动**：向 `AIAgent` 注入简单的 `stream_callback(text_delta)`，核心不关心消费者如何展示。
+3. **优雅降级**：Provider 不支持流式或执行失败时，回退到非流式路径。
+4. **平台无关核心**：AIAgent 的流式机制不依赖 CLI、Telegram、Discord 或 API Server。
+5. **缓存与消息安全**：不得为了 Streaming 修改过去上下文、动态交换工具集或破坏角色交替。
 
-## Architecture
+## 架构
 
-```
+```text
                               stream_callback(delta)
-                                    │
-  ┌─────────────┐    ┌─────────────▼──────────────┐
-  │  LLM API    │    │      queue.Queue()          │
-  │  (stream)   │───►│  thread-safe bridge between │
-  │             │    │  agent thread & consumer    │
-  └─────────────┘    └─────────────┬──────────────┘
-                                   │
-                    ┌──────────────┼──────────────┐
-                    │              │              │
-              ┌─────▼─────┐ ┌─────▼─────┐ ┌─────▼─────┐
-              │    CLI     │ │  Gateway  │ │ API Server│
-              │ print to   │ │ edit msg  │ │ SSE event │
-              │ terminal   │ │ on Tg/Dc  │ │ to client │
-              └───────────┘ └───────────┘ └───────────┘
+                                       |
+          LLM Stream ----------------->| 线程安全 queue
+                                       |
+                    +------------------+------------------+
+                    |                  |                  |
+                    v                  v                  v
+              CLI 增量显示       Gateway 编辑消息      API Server SSE
 ```
 
-The agent runs in a thread. The callback puts tokens into a thread-safe queue.
-Each consumer reads the queue in its own context (async task, main thread, etc.).
+Agent 在线程中运行，callback 将文本增量放入线程安全队列。每个消费者在自己的执行
+上下文中读取：异步任务、主线程或 SSE writer。
 
----
-
-## Configuration
-
-### config.yaml
+## 配置
 
 ```yaml
 streaming:
-  enabled: false          # Master switch. Default off.
-  # Per-platform overrides (optional):
-  # cli: true             # Override for CLI only
-  # telegram: true        # Override for Telegram only
-  # discord: false        # Keep Discord non-streaming
-  # api_server: true      # Override for API server
+  enabled: false
+  # 可选的按平台覆盖：
+  # cli: true
+  # telegram: true
+  # discord: false
+  # api_server: true
+  edit_interval: 1.5
+  min_tokens: 20
 ```
 
-### Environment variables
+配置优先级建议：
 
-```
-HERMES_STREAMING_ENABLED=true    # Master switch via env
-```
+1. API 请求显式的 `stream` 字段；
+2. 按平台覆盖值；
+3. `streaming.enabled`；
+4. 默认关闭。
 
-### How the flag is read
+旧计划中的 `HERMES_STREAMING_ENABLED` 非秘密环境变量不再作为推荐用户配置；如仍有
+兼容代码，应由 `config.yaml` 内部桥接，并在用户文档中只介绍配置文件方式。
 
-- **CLI**: `load_cli_config()` reads `streaming.enabled`, sets env var. AIAgent
-  checks at init time.
-- **Gateway**: `_run_agent()` reads config, decides whether to pass
-  `stream_callback` to the AIAgent constructor.
-- **API server**: For Chat Completions `stream=true` requests, always uses streaming
-  regardless of config (the client is explicitly requesting it). For non-stream
-  requests, uses config.
+## 第一阶段：AIAgent 核心流式基础设施
 
-### Precedence
+### 增加 callback
 
-1. API server: client's `stream` field overrides everything
-2. Per-platform config override (e.g., `streaming.telegram: true`)
-3. Master `streaming.enabled` flag
-4. Default: off
-
----
-
-## Implementation Plan
-
-### Phase 1: Core streaming infrastructure in AIAgent
-
-**File: run_agent.py**
-
-#### 1a. Add stream_callback parameter to __init__ (~5 lines)
+在 AIAgent 构造或当前合适的会话入口增加可选 callback：
 
 ```python
 def __init__(self, ..., stream_callback: callable = None, ...):
     self.stream_callback = stream_callback
 ```
 
-No other init changes. The callback is optional — when None, everything
-works exactly as before.
+callback 为 `None` 时，行为必须与现有实现完全一致。
 
-#### 1b. Add _run_streaming_chat_completion() method (~65 lines)
+### Chat Completions 增量聚合
 
-New method for Chat Completions API streaming:
+流式调用需要同时处理文本、usage 和分片 tool call：
 
 ```python
 def _run_streaming_chat_completion(self, api_kwargs: dict):
-    """Stream a chat completion, emitting text tokens via stream_callback.
-    
-    Returns a fake response object compatible with the non-streaming code path.
-    Falls back to non-streaming on any error.
-    """
     stream_kwargs = dict(api_kwargs)
     stream_kwargs["stream"] = True
     stream_kwargs["stream_options"] = {"include_usage": True}
-    
+
     accumulated_content = []
-    accumulated_tool_calls = {}  # index -> {id, name, arguments}
+    accumulated_tool_calls = {}
     final_usage = None
-    
+
     try:
         stream = self.client.chat.completions.create(**stream_kwargs)
-        
         for chunk in stream:
             if not chunk.choices:
-                # Usage-only chunk (final)
                 if chunk.usage:
                     final_usage = chunk.usage
                 continue
-            
+
             delta = chunk.choices[0].delta
-            
-            # Text content — emit via callback
             if delta.content:
                 accumulated_content.append(delta.content)
                 if self.stream_callback:
-                    try:
-                        self.stream_callback(delta.content)
-                    except Exception:
-                        pass
-            
-            # Tool call deltas — accumulate silently
+                    self.stream_callback(delta.content)
+
             if delta.tool_calls:
-                for tc_delta in delta.tool_calls:
-                    idx = tc_delta.index
-                    if idx not in accumulated_tool_calls:
-                        accumulated_tool_calls[idx] = {
-                            "id": tc_delta.id or "",
-                            "name": "", "arguments": ""
-                        }
-                    if tc_delta.function:
-                        if tc_delta.function.name:
-                            accumulated_tool_calls[idx]["name"] = tc_delta.function.name
-                        if tc_delta.function.arguments:
-                            accumulated_tool_calls[idx]["arguments"] += tc_delta.function.arguments
-        
-        # Build fake response compatible with existing code
-        tool_calls = []
-        for idx in sorted(accumulated_tool_calls):
-            tc = accumulated_tool_calls[idx]
-            if tc["name"]:
-                tool_calls.append(SimpleNamespace(
-                    id=tc["id"], type="function",
-                    function=SimpleNamespace(name=tc["name"], arguments=tc["arguments"]),
-                ))
-        
-        return SimpleNamespace(
-            choices=[SimpleNamespace(
-                message=SimpleNamespace(
-                    content="".join(accumulated_content) or "",
-                    tool_calls=tool_calls or None,
-                    role="assistant",
-                ),
-                finish_reason="tool_calls" if tool_calls else "stop",
-            )],
+                # 按 index 合并 id、name 和 arguments 分片。
+                ...
+
+        # 构造与非流式后续路径兼容的响应对象。
+        return build_compatible_response(
+            content="".join(accumulated_content),
+            tool_calls=accumulated_tool_calls,
             usage=final_usage,
-            model=self.model,
         )
-    
-    except Exception as e:
-        logger.debug("Streaming failed, falling back to non-streaming: %s", e)
+    except Exception:
+        # Streaming 失败时回退到非流式调用。
         return self.client.chat.completions.create(**api_kwargs)
 ```
 
-#### 1c. Modify _run_codex_stream() for Responses API (~10 lines)
+实现时不能吞掉 callback 自身以外的重要异常，也不能构造与现有 Provider 适配器不一致
+的伪响应。优先复用当前仓库已经存在的响应规范化层。
 
-The method already iterates the stream. Add callback emission:
+### Responses API
+
+Responses 流已经逐事件迭代时，只在文本 delta 事件上调用 callback：
 
 ```python
 def _run_codex_stream(self, api_kwargs: dict):
     with self.client.responses.stream(**api_kwargs) as stream:
         for event in stream:
-            # Emit text deltas if streaming callback is set
-            if self.stream_callback and hasattr(event, 'type'):
-                if event.type == 'response.output_text.delta':
-                    try:
-                        self.stream_callback(event.delta)
-                    except Exception:
-                        pass
+            if (
+                self.stream_callback
+                and getattr(event, "type", None) == "response.output_text.delta"
+            ):
+                self.stream_callback(event.delta)
         return stream.get_final_response()
 ```
 
-#### 1d. Modify _interruptible_api_call() (~5 lines)
+### 中断调用分支
 
-Add the streaming branch:
+在当前 `_interruptible_api_call()` 或等价入口中，按 API mode 与 callback 决定走流式
+还是非流式路径。必须保留现有中断、grace call、fallback 和 usage 统计语义。
 
-```python
-def _call():
-    try:
-        if self.api_mode == "codex_responses":
-            result["response"] = self._run_codex_stream(api_kwargs)
-        elif self.stream_callback is not None:
-            result["response"] = self._run_streaming_chat_completion(api_kwargs)
-        else:
-            result["response"] = self.client.chat.completions.create(**api_kwargs)
-    except Exception as e:
-        result["error"] = e
-```
+### 结束信号
 
-#### 1e. Signal end-of-stream to consumers (~5 lines)
-
-After the API call returns, signal the callback that streaming is done
-so consumers can finalize (remove cursor, close SSE, etc.):
+历史方案使用 `None` 表示流结束：
 
 ```python
-# In run_conversation(), after _interruptible_api_call returns:
 if self.stream_callback:
-    try:
-        self.stream_callback(None)  # None = end of stream signal
-    except Exception:
-        pass
+    self.stream_callback(None)
 ```
 
-Consumers check: `if delta is None: finalize()`
+正式实现应明确区分“正常完成”“中断”“Provider 失败”，必要时使用结构化事件，而不是
+让一个 `None` 同时承担多种语义。
 
-**Tests for Phase 1:** (~150 lines)
-- Test _run_streaming_chat_completion with mocked stream
-- Test fallback to non-streaming on error
-- Test tool_call accumulation during streaming
-- Test stream_callback receives correct deltas
-- Test None signal at end of stream
-- Test streaming disabled when callback is None
+### 第一阶段测试
 
----
+- callback 按顺序收到正确文本增量；
+- callback 为 `None` 时完全走非流式路径；
+- Provider 流式失败时按契约回退；
+- tool call 参数分片能够正确聚合；
+- usage-only 尾包被正确处理；
+- 中断和结束信号不会产生重复响应；
+- 使用当前仓库的真实响应规范化代码，而不是只测 `SimpleNamespace` mock。
 
-### Phase 2: Gateway consumers (Telegram, Discord, etc.)
+## 第二阶段：Gateway 消费者
 
-**File: gateway/run.py**
+### 读取配置
 
-#### 2a. Read streaming config (~15 lines)
+Gateway 应从当前权威配置加载器读取 `streaming` 段，先检查按平台覆盖，再检查全局值。
+不得新增面向用户的非秘密 `.env` 开关。
 
-In `_run_agent()`, before creating the AIAgent:
+### Queue 与 callback
 
 ```python
-# Read streaming config
-_streaming_enabled = False
-try:
-    # Check per-platform override first
-    platform_key = source.platform.value if source.platform else ""
-    _stream_cfg = {}  # loaded from config.yaml streaming section
-    if _stream_cfg.get(platform_key) is not None:
-        _streaming_enabled = bool(_stream_cfg[platform_key])
+_stream_q = queue.Queue()
+_stream_done = threading.Event()
+
+def _on_token(delta):
+    if delta is None:
+        _stream_done.set()
     else:
-        _streaming_enabled = bool(_stream_cfg.get("enabled", False))
-except Exception:
-    pass
-# Env var override
-if os.getenv("HERMES_STREAMING_ENABLED", "").lower() in ("true", "1", "yes"):
-    _streaming_enabled = True
+        _stream_q.put(delta)
 ```
 
-#### 2b. Set up queue + callback (~15 lines)
+该 callback 传给 AIAgent。消费者需要保证异常、中断和取消时最终能设置完成状态并清理任务。
 
-```python
-_stream_q = None
-_stream_done = None
-_stream_msg_id = [None]  # mutable ref for the async task
+### 消息预览任务
 
-if _streaming_enabled:
-    import queue as _q
-    _stream_q = _q.Queue()
-    _stream_done = threading.Event()
-    
-    def _on_token(delta):
-        if delta is None:
-            _stream_done.set()
-        else:
-            _stream_q.put(delta)
-```
-
-Pass `stream_callback=_on_token` to the AIAgent constructor.
-
-#### 2c. Telegram/Discord stream preview task (~50 lines)
+支持编辑消息的平台可以累积增量并周期性更新一条消息：
 
 ```python
 async def stream_preview():
-    """Progressively edit a message with streaming tokens."""
-    if not _stream_q:
-        return
-    adapter = self.adapters.get(source.platform)
-    if not adapter:
-        return
-    
     accumulated = []
     token_count = 0
     last_edit = 0.0
-    MIN_TOKENS = 20          # Don't show until enough context
-    EDIT_INTERVAL = 1.5      # Respect Telegram rate limits
-    
-    try:
-        while not _stream_done.is_set():
-            try:
-                chunk = _stream_q.get(timeout=0.1)
-                accumulated.append(chunk)
-                token_count += 1
-            except queue.Empty:
-                continue
-            
-            now = time.monotonic()
-            if token_count >= MIN_TOKENS and (now - last_edit) >= EDIT_INTERVAL:
-                preview = "".join(accumulated) + " ▌"
-                if _stream_msg_id[0] is None:
-                    r = await adapter.send(
-                        chat_id=source.chat_id,
-                        content=preview,
-                        metadata=_thread_metadata,
-                    )
-                    if r.success and r.message_id:
-                        _stream_msg_id[0] = r.message_id
-                else:
-                    await adapter.edit_message(
-                        chat_id=source.chat_id,
-                        message_id=_stream_msg_id[0],
-                        content=preview,
-                    )
-                last_edit = now
-        
-        # Drain remaining tokens
-        while not _stream_q.empty():
-            accumulated.append(_stream_q.get_nowait())
-        
-        # Final edit — remove cursor, show complete text
-        if _stream_msg_id[0] and accumulated:
-            await adapter.edit_message(
-                chat_id=source.chat_id,
-                message_id=_stream_msg_id[0],
-                content="".join(accumulated),
-            )
-    
-    except asyncio.CancelledError:
-        # Clean up on cancel
-        if _stream_msg_id[0] and accumulated:
-            try:
-                await adapter.edit_message(
-                    chat_id=source.chat_id,
-                    message_id=_stream_msg_id[0],
-                    content="".join(accumulated),
-                )
-            except Exception:
-                pass
-    except Exception as e:
-        logger.debug("stream_preview error: %s", e)
-```
 
-#### 2d. Skip final send if already streamed (~10 lines)
-
-In `_process_message_background()` (base.py), after getting the response,
-if streaming was active and `_stream_msg_id[0]` is set, the final response
-was already delivered via progressive edits. Skip the normal `self.send()`
-call to avoid duplicating the message.
-
-This is the most delicate integration point — we need to communicate from
-the gateway's `_run_agent` back to the base adapter's response sender that
-the response was already delivered. Options:
-
-- **Option A**: Return a special marker in the result dict:
-  `result["_streamed_msg_id"] = _stream_msg_id[0]`
-  The base adapter checks this and skips `send()`.
-  
-- **Option B**: Edit the already-sent message with the final response
-  (which may differ slightly from accumulated tokens due to think-block
-  stripping, etc.) and don't send a new one.
-
-- **Option C**: The stream preview task handles the FULL final response
-  (including any post-processing), and the handler returns None to skip
-  the normal send path.
-
-Recommended: **Option A** — cleanest separation. The result dict already
-carries metadata; adding one more field is low-risk.
-
-**Platform-specific considerations:**
-
-| Platform | Edit support | Rate limits | Streaming approach |
-|----------|-------------|-------------|-------------------|
-| Telegram | ✅ edit_message_text | ~20 edits/min | Edit every 1.5s |
-| Discord | ✅ message.edit | 5 edits/5s per message | Edit every 1.2s |
-| Slack | ✅ chat.update | Tier 3 (~50/min) | Edit every 1.5s |
-| WhatsApp | ❌ no edit support | N/A | Skip streaming, use normal path |
-| HomeAssistant | ❌ no edit | N/A | Skip streaming |
-| API Server | ✅ SSE native | No limit | Real SSE events |
-
-WhatsApp and HomeAssistant fall back to non-streaming automatically because
-they don't support message editing.
-
-**Tests for Phase 2:** (~100 lines)
-- Test stream_preview sends/edits correctly
-- Test skip-final-send when streaming delivered
-- Test WhatsApp/HA graceful fallback
-- Test streaming disabled per-platform config
-- Test thread_id metadata forwarded in stream messages
-
----
-
-### Phase 3: CLI streaming
-
-**File: cli.py**
-
-#### 3a. Set up callback in the CLI chat loop (~20 lines)
-
-In `_chat_once()` or wherever the agent is invoked:
-
-```python
-if streaming_enabled:
-    _stream_q = queue.Queue()
-    _stream_done = threading.Event()
-    
-    def _cli_stream_callback(delta):
-        if delta is None:
-            _stream_done.set()
-        else:
-            _stream_q.put(delta)
-    
-    agent.stream_callback = _cli_stream_callback
-```
-
-#### 3b. Token display thread/task (~30 lines)
-
-Start a thread that reads the queue and prints tokens:
-
-```python
-def _stream_display():
-    """Print tokens to terminal as they arrive."""
-    first_token = True
     while not _stream_done.is_set():
         try:
-            delta = _stream_q.get(timeout=0.1)
+            chunk = _stream_q.get(timeout=0.1)
         except queue.Empty:
             continue
-        if first_token:
-            # Print response box top border
-            _cprint(f"\n{top}")
-            first_token = False
-        sys.stdout.write(delta)
-        sys.stdout.flush()
-    # Drain remaining
-    while not _stream_q.empty():
-        sys.stdout.write(_stream_q.get_nowait())
-    sys.stdout.flush()
-    # Print bottom border
-    _cprint(f"\n\n{bot}")
+
+        accumulated.append(chunk)
+        token_count += 1
+        now = time.monotonic()
+        if token_count >= min_tokens and now - last_edit >= edit_interval:
+            await send_or_edit("".join(accumulated) + " ▌")
+            last_edit = now
+
+    # 排空队列，并用最终处理后的文本完成最后一次编辑。
 ```
 
-**Integration challenge: prompt_toolkit**
+关键要求：
 
-The CLI uses prompt_toolkit which controls the terminal. Writing directly
-to stdout while prompt_toolkit is active can cause display corruption.
-The existing KawaiiSpinner already solves this by using prompt_toolkit's
-`patch_stdout` context. The streaming display would need to do the same.
+- 第一批内容足够稳定后才创建消息；
+- 编辑频率必须符合平台限制；
+- 中断时移除光标并保留已输出内容；
+- 最终编辑使用后处理后的 `final_response`，不能直接使用原始 token 拼接；
+- 没有文本增量的 tool-call 轮次不能发送空消息。
 
-Alternative: use `_cprint()` for each token chunk (routes through
-prompt_toolkit's renderer). But this might be slow for individual tokens.
+### 避免重复发送
 
-Recommended approach: accumulate tokens in small batches (e.g., every 50ms)
-and `_cprint()` the batch. This balances display responsiveness with
-prompt_toolkit compatibility.
+最大风险是预览消息已经显示回复，而原有发送路径又发送一次最终结果。历史方案建议
+在结果元数据中加入 `_streamed_msg_id`，由基础适配器跳过常规 `send()`。
 
-**Tests for Phase 3:** (~50 lines)
-- Test CLI streaming callback setup
-- Test response box borders with streaming
-- Test fallback when streaming disabled
+正式实现必须验证这一标记不会泄漏到用户协议，也不会破坏不支持流式的平台。更优方案
+是使用现有结构化交付状态，而不是临时 dict 字段。
 
----
+### 平台差异
 
-### Phase 4: API Server real streaming
+| 平台 | 编辑支持 | 建议方式 |
+| --- | --- | --- |
+| Telegram | 支持 | 受限频率编辑同一消息 |
+| Discord | 支持 | 按每消息 rate limit 编辑 |
+| Slack | 支持 | 使用 `chat.update` 并限频 |
+| WhatsApp | 通常不支持 | 回退到非流式最终发送 |
+| Home Assistant | 不适用消息编辑 | 回退到非流式路径 |
+| API Server | 原生 SSE | 直接发送 SSE 事件 |
 
-**File: gateway/platforms/api_server.py**
+### 第二阶段测试
 
-Replace the pseudo-streaming `_write_sse_chat_completion()` with real
-token-by-token SSE when the agent supports it.
+- 预览只创建一次，并按限频编辑；
+- 已流式交付时不会重复发送最终消息；
+- 不支持编辑的平台优雅回退；
+- 按平台配置覆盖正确；
+- thread/chat 元数据完整传递；
+- 中断、取消和异常都能清理后台任务。
 
-#### 4a. Wire streaming callback for stream=true requests (~20 lines)
+## 第三阶段：CLI 流式显示
 
-```python
-if stream:
-    _stream_q = queue.Queue()
-    
-    def _api_stream_callback(delta):
-        _stream_q.put(delta)  # None = done
-    
-    # Pass callback to _run_agent
-    result, usage = await self._run_agent(
-        ..., stream_callback=_api_stream_callback,
-    )
-```
+### Callback 与显示线程
 
-#### 4b. Real SSE writer (~40 lines)
+CLI 可以使用 queue 和完成事件收集增量，再以小批次刷新终端：
 
 ```python
-async def _write_real_sse(self, request, completion_id, model, stream_q):
-    response = web.StreamResponse(
-        headers={"Content-Type": "text/event-stream", "Cache-Control": "no-cache"},
-    )
-    await response.prepare(request)
-    
-    # Role chunk
-    await response.write(...)
-    
-    # Stream content chunks as they arrive
-    while True:
-        try:
-            delta = await asyncio.get_event_loop().run_in_executor(
-                None, lambda: stream_q.get(timeout=0.1)
-            )
-        except queue.Empty:
+def _cli_stream_callback(delta):
+    if delta is None:
+        _stream_done.set()
+    else:
+        _stream_q.put(delta)
+
+def _stream_display():
+    first_chunk = True
+    while not _stream_done.is_set():
+        batch = collect_small_batch(_stream_q, timeout=0.05)
+        if not batch:
             continue
-        
-        if delta is None:  # End of stream
-            break
-        
-        chunk = {"id": completion_id, "object": "chat.completion.chunk", ...
-                 "choices": [{"delta": {"content": delta}, ...}]}
-        await response.write(f"data: {json.dumps(chunk)}\n\n".encode())
-    
-    # Finish + [DONE]
-    await response.write(...)
-    await response.write(b"data: [DONE]\n\n")
-    return response
+        if first_chunk:
+            print_response_top_border()
+            first_chunk = False
+        render_batch(batch)
+    drain_remaining_tokens()
+    print_response_bottom_border()
 ```
 
-**Challenge: concurrent execution**
+### prompt_toolkit 集成风险
 
-The agent runs in a thread executor. SSE writing happens in the async event
-loop. The queue bridges them. But `_run_agent()` currently awaits the full
-result before returning. For real streaming, we need to start the agent in
-the background and stream tokens while it runs:
+经典 CLI 使用 `prompt_toolkit` 控制终端。后台线程直接写 stdout 可能破坏输入区和
+Spinner。实现应复用现有 `patch_stdout`/显示抽象，并以短时间批次刷新，不能逐 token
+调用高成本 renderer。
 
-```python
-# Start agent in background
-agent_task = asyncio.create_task(self._run_agent_async(...))
+### 第三阶段测试
 
-# Stream tokens while agent runs
-await self._write_real_sse(request, ..., stream_q)
+- callback 安装和移除正确；
+- 流式与非流式响应框边界一致；
+- 输入区、Spinner 和工具进度不互相覆盖；
+- 禁用 Streaming 时回到原路径；
+- 中断后终端状态恢复正常。
 
-# Agent is done by now (stream_q received None)
-result, usage = await agent_task
-```
+## 第四阶段：API Server 真实 SSE
 
-This requires splitting `_run_agent` into an async version that doesn't
-block waiting for the result, or running it in a separate task.
+### Callback wiring
 
-**Responses API SSE format:**
+当请求包含 `stream=true` 时，API Server 创建队列并把 callback 传入 Agent 运行路径。
+Agent 必须在后台 task/executor 中运行，SSE writer 与之并发消费队列；不能先等待完整
+Agent 结果再开始“流式”输出。
 
-For `/v1/responses` with `stream=true`, the SSE events are different:
+### Chat Completions SSE
 
-```
+SSE writer 的职责：
+
+1. 准备 `text/event-stream` 响应；
+2. 发送 role chunk；
+3. 把文本增量转换为 `choices[0].delta.content`；
+4. 正常完成时发送 finish chunk 和 `[DONE]`；
+5. 客户端断开时取消 Agent 并清理队列；
+6. 失败时遵循 OpenAI 兼容错误契约。
+
+### Responses API SSE
+
+Responses API 使用不同事件：
+
+```text
 event: response.output_text.delta
 data: {"type":"response.output_text.delta","delta":"Hello"}
 
-event: response.completed  
+event: response.completed
 data: {"type":"response.completed","response":{...}}
 ```
 
-This needs a separate SSE writer that emits Responses API format events.
+两个端点应使用各自 writer 或共享的结构化事件层，不能混用 wire format。
 
-**Tests for Phase 4:** (~80 lines)
-- Test real SSE streaming with mocked agent
-- Test SSE event format (Chat Completions vs Responses)
-- Test client disconnect during streaming
-- Test fallback to pseudo-streaming when callback not available
+### 第四阶段测试
 
----
+- 使用受控 Agent 流验证真实 SSE 增量；
+- 校验 Chat Completions 与 Responses 的事件格式；
+- 客户端断开时 Agent 被中断且资源清理；
+- callback 不可用时按明确契约回退；
+- 并发请求、背压和慢客户端不会无限占用内存。
 
-## Integration Issues & Edge Cases
+## 集成问题与边界场景
 
-### 1. Tool calls during streaming
+### 工具调用期间无文本
 
-When the model returns tool calls instead of text, no text tokens are emitted.
-The stream_callback is simply never called with text. After tools execute, the
-next API call may produce the final text response — streaming picks up again.
+模型返回 tool call 时可能没有文本增量。预览任务不能因此发送空消息。工具执行完成后，
+下一次模型调用产生文本时继续 Streaming。现有工具进度展示保持独立。
 
-The stream preview task needs to handle this: if no tokens arrive during a
-tool-call round, don't send/edit any message. The tool progress messages
-continue working as before.
+### 重复消息
 
-### 2. Duplicate messages
+流式预览和常规最终发送必须只有一个交付所有者。需要通过行为测试验证各种成功、失败、
+中断和无 token 情况，不仅检查 happy path。
 
-The biggest risk: the agent sends the final response normally (via the
-existing send path) AND the stream preview already showed it. The user
-sees the response twice.
+### 响应后处理
 
-Prevention: when streaming is active and tokens were delivered, the final
-response send must be suppressed. The `result["_streamed_msg_id"]` marker
-tells the base adapter to skip its normal send.
+最终响应可能经过 think block 移除、尾部空白清理和媒体 tag 追加。流中显示的是原始增量，
+最终一次编辑必须用后处理后的响应覆盖，避免用户最终看到不一致内容。
 
-### 3. Response post-processing
+### 上下文压缩
 
-The final response may differ from the accumulated streamed tokens:
-- Think block stripping (`<think>...</think>` removed)
-- Trailing whitespace cleanup
-- Tool result media tag appending
+压缩发生在 API 调用之间，不应修改已经发出的增量。实现不得为了 Streaming 在对话中途
+重建系统提示词或交换工具集。
 
-The stream preview shows raw tokens. The final edit should use the
-post-processed version. This means the final edit (removing the cursor)
-should use the post-processed `final_response`, not just the accumulated
-stream text.
+### 中断
 
-### 4. Context compression during streaming
+用户在 Streaming 期间发送新消息时，应关闭当前 Provider 流、保留已输出内容、移除光标，
+并按现有中断语义处理新消息。必须同时满足 Gateway 的两层控制消息 guard。
 
-If the agent triggers context compression mid-conversation, the streaming
-tokens from BEFORE compression are from a different context than those
-after. This isn't a problem in practice — compression happens between
-API calls, not during streaming.
+### 多模型与 fallback
 
-### 5. Interrupt during streaming
+主模型失败并切换 fallback 时，流状态需要明确重置。fallback 不支持 Streaming 时应回退，
+但不能重复发送主模型已经交付的内容。
 
-User sends a new message while streaming → interrupt. The stream is killed
-(HTTP connection closed), accumulated tokens are shown as-is (no cursor),
-and the interrupt message is processed normally. This is already handled by
-`_interruptible_api_call` closing the client.
+### 编辑速率限制
 
-### 6. Multi-model / fallback
+- Telegram：需要保守限制编辑频率；
+- Discord：遵循每消息编辑限制；
+- Slack：遵循 API 调用限制；
+- 遇到 429 时跳过当前编辑周期并重试，不能让预览失败终止 Agent 主流程。
 
-If the primary model fails and the agent falls back to a different model,
-streaming state resets. The fallback call may or may not support streaming.
-The graceful fallback in `_run_streaming_chat_completion` handles this.
+## 变更区域摘要
 
-### 7. Rate limiting on edits
+| 文件 | 阶段 | 历史计划中的变化 |
+| --- | --- | --- |
+| `run_agent.py` | 1 | callback、流式 Chat Completions、Responses 事件、可中断调用 |
+| `gateway/run.py` | 2 | 配置、queue/callback、预览 task、最终交付状态 |
+| `gateway/platforms/base.py` | 2 | 跳过重复最终发送 |
+| `cli.py` | 3 | callback、批量 token 显示、响应框集成 |
+| `gateway/platforms/api_server.py` | 4 | 真实 SSE writer 和并发 Agent task |
+| `hermes_cli/config.py` | 1 | Streaming 配置默认值 |
+| `cli-config.yaml.example` | 1 | Streaming 配置示例 |
+| 所属测试文件 | 1-4 | 单元、不变量、集成和端到端测试 |
 
-Telegram: ~20 edits/minute (~1 every 3 seconds to be safe)
-Discord: 5 edits per 5 seconds per message
-Slack: ~50 API calls/minute
+实际变更路径必须以当前代码所有权为准，不能照搬历史文件清单。
 
-The 1.5s edit interval is conservative enough for all platforms. If we get
-429 rate limit errors on edits, just skip that edit cycle and try next time.
+## 发布计划
 
----
+1. **核心阶段**：默认关闭，验证 callback、Provider 和非流式兼容。
+2. **Gateway 阶段**：先在一个支持编辑的平台进行真实验证，再逐平台开启。
+3. **CLI 阶段**：验证多种终端、prompt_toolkit、Spinner 和中断。
+4. **API Server 阶段**：使用真实 OpenAI 客户端验证 SSE、断开和错误格式。
 
-## Files Changed Summary
+每个阶段都应独立可合并、可测试、可回滚。是否修改默认值属于独立产品决策，不能因为
+所有阶段技术稳定就自动开启。
 
-| File | Phase | Changes |
-|------|-------|---------|
-| `run_agent.py` | 1 | +stream_callback param, +_run_streaming_chat_completion(), modify _run_codex_stream(), modify _interruptible_api_call() |
-| `gateway/run.py` | 2 | +streaming config reader, +queue/callback setup, +stream_preview task, +skip-final-send logic |
-| `gateway/platforms/base.py` | 2 | +check for _streamed_msg_id in response handler |
-| `cli.py` | 3 | +streaming setup, +token display, +response box integration |
-| `gateway/platforms/api_server.py` | 4 | +real SSE writer, +streaming callback wiring |
-| `hermes_cli/config.py` | 1 | +streaming config defaults |
-| `cli-config.yaml.example` | 1 | +streaming section |
-| `tests/test_streaming.py` | 1-4 | NEW — ~380 lines of tests |
-
-**Total new code**: ~500 lines across all phases
-**Total test code**: ~380 lines
-
----
-
-## Rollout Plan
-
-1. **Phase 1** (core): Merge to main. Streaming disabled by default.
-   Zero impact on existing behavior. Can be tested with env var.
-
-2. **Phase 2** (gateway): Merge to main. Test on Telegram manually.
-   Enable per-platform: `streaming.telegram: true` in config.
-
-3. **Phase 3** (CLI): Merge to main. Test in terminal.
-   Enable: `streaming.cli: true` or `streaming.enabled: true`.
-
-4. **Phase 4** (API server): Merge to main. Test with Open WebUI.
-   Auto-enabled when client sends `stream: true`.
-
-Each phase is independently mergeable and testable. Streaming stays
-off by default throughout. Once all phases are stable, consider
-changing the default to enabled.
-
----
-
-## Config Reference (final state)
+## 最终配置参考
 
 ```yaml
-# config.yaml
 streaming:
-  enabled: false          # Master switch (default: off)
-  cli: true               # Per-platform override
+  enabled: false          # 总开关，默认关闭
+  cli: true               # 按平台覆盖
   telegram: true
   discord: true
   slack: true
-  api_server: true        # API server always streams when client requests it
-  edit_interval: 1.5      # Seconds between message edits (default: 1.5)
-  min_tokens: 20          # Tokens before first display (default: 20)
+  api_server: true        # 客户端请求 stream=true 时使用
+  edit_interval: 1.5      # 消息编辑间隔（秒）
+  min_tokens: 20          # 首次显示前的最小增量数量
 ```
 
-```bash
-# Environment variable override
-HERMES_STREAMING_ENABLED=true
-```
+用户文档只应介绍当前 `config.yaml` 权威配置。任何遗留环境变量都属于内部兼容层，必须
+有弃用路径，不能作为新用户的推荐设置。

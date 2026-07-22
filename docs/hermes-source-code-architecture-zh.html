@@ -1,0 +1,1551 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="description" content="Hermes Agent 源代码与项目架构中文解读：核心 Agent、工具、Provider、多端接入、会话、记忆、技能、插件与定时任务。">
+  <title>Hermes Agent 源代码与项目架构解读</title>
+  <style>
+    :root {
+      --bg: #f5f7fb;
+      --panel: #ffffff;
+      --panel-soft: #f8fafc;
+      --text: #172033;
+      --muted: #64748b;
+      --line: #dbe3ef;
+      --accent: #176b87;
+      --accent-2: #0f8a72;
+      --accent-soft: #e8f5f7;
+      --warning: #9a5b13;
+      --warning-soft: #fff7e6;
+      --danger: #a33838;
+      --danger-soft: #fff0f0;
+      --code-bg: #101827;
+      --code-text: #e8eef9;
+      --shadow: 0 12px 36px rgba(31, 54, 85, 0.08);
+      --sidebar-width: 292px;
+      --content-width: 1080px;
+      --radius: 15px;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0c121c;
+        --panel: #121b28;
+        --panel-soft: #172232;
+        --text: #e8edf5;
+        --muted: #9baabd;
+        --line: #29374a;
+        --accent: #73c8df;
+        --accent-2: #68d0b3;
+        --accent-soft: #15313a;
+        --warning: #f2bd68;
+        --warning-soft: #392b16;
+        --danger: #f49b9b;
+        --danger-soft: #3b2023;
+        --code-bg: #070b12;
+        --code-text: #e8eef9;
+        --shadow: 0 16px 40px rgba(0, 0, 0, 0.24);
+      }
+    }
+
+    * { box-sizing: border-box; }
+
+    html {
+      scroll-behavior: smooth;
+      scroll-padding-top: 24px;
+    }
+
+    body {
+      margin: 0;
+      background:
+        radial-gradient(circle at 8% 0%, rgba(23, 107, 135, 0.09), transparent 28rem),
+        radial-gradient(circle at 95% 5%, rgba(15, 138, 114, 0.08), transparent 30rem),
+        var(--bg);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+        "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      font-size: 16px;
+      line-height: 1.78;
+      text-rendering: optimizeLegibility;
+    }
+
+    a {
+      color: var(--accent);
+      text-decoration-thickness: 1px;
+      text-underline-offset: 3px;
+    }
+
+    a:hover { color: var(--accent-2); }
+
+    code, pre, kbd {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    }
+
+    code {
+      padding: 0.13em 0.38em;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--panel-soft);
+      font-size: 0.9em;
+    }
+
+    pre {
+      position: relative;
+      overflow: auto;
+      margin: 1.15rem 0;
+      padding: 1.15rem 1.25rem;
+      border: 1px solid rgba(132, 160, 195, 0.22);
+      border-radius: 12px;
+      background: var(--code-bg);
+      color: var(--code-text);
+      font-size: 0.87rem;
+      line-height: 1.65;
+      box-shadow: inset 0 1px rgba(255, 255, 255, 0.03);
+    }
+
+    pre code {
+      padding: 0;
+      border: 0;
+      background: transparent;
+      color: inherit;
+      font-size: inherit;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+      min-height: 100vh;
+    }
+
+    .sidebar {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      overflow-y: auto;
+      padding: 28px 22px;
+      border-right: 1px solid var(--line);
+      background: color-mix(in srgb, var(--panel) 91%, transparent);
+      backdrop-filter: blur(15px);
+    }
+
+    .brand {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      margin-bottom: 22px;
+    }
+
+    .brand-mark {
+      display: grid;
+      place-items: center;
+      width: 42px;
+      height: 42px;
+      border-radius: 12px;
+      background: linear-gradient(145deg, var(--accent), var(--accent-2));
+      color: white;
+      font-weight: 800;
+      box-shadow: var(--shadow);
+    }
+
+    .brand strong {
+      display: block;
+      font-size: 0.98rem;
+      line-height: 1.25;
+    }
+
+    .brand small {
+      display: block;
+      margin-top: 3px;
+      color: var(--muted);
+      line-height: 1.3;
+    }
+
+    .toc-title {
+      margin: 0 0 8px;
+      color: var(--muted);
+      font-size: 0.72rem;
+      font-weight: 800;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    .toc {
+      display: grid;
+      gap: 2px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .toc a {
+      display: block;
+      padding: 7px 10px;
+      border-radius: 8px;
+      color: var(--muted);
+      text-decoration: none;
+      font-size: 0.87rem;
+      line-height: 1.35;
+      transition: background 120ms ease, color 120ms ease, transform 120ms ease;
+    }
+
+    .toc a:hover {
+      background: var(--panel-soft);
+      color: var(--text);
+      transform: translateX(2px);
+    }
+
+    .toc a.active {
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-weight: 700;
+    }
+
+    .sidebar-note {
+      margin-top: 24px;
+      padding-top: 18px;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 0.78rem;
+    }
+
+    main {
+      min-width: 0;
+      padding: 42px clamp(22px, 4vw, 70px) 100px;
+    }
+
+    .content {
+      max-width: var(--content-width);
+      margin: 0 auto;
+    }
+
+    .hero {
+      position: relative;
+      overflow: hidden;
+      margin-bottom: 28px;
+      padding: clamp(28px, 5vw, 56px);
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      background:
+        linear-gradient(130deg, color-mix(in srgb, var(--panel) 88%, var(--accent-soft)), var(--panel));
+      box-shadow: var(--shadow);
+    }
+
+    .hero::after {
+      position: absolute;
+      right: -70px;
+      bottom: -115px;
+      width: 310px;
+      height: 310px;
+      border: 54px solid color-mix(in srgb, var(--accent) 15%, transparent);
+      border-radius: 50%;
+      content: "";
+    }
+
+    .eyebrow {
+      position: relative;
+      z-index: 1;
+      margin: 0 0 10px;
+      color: var(--accent);
+      font-size: 0.8rem;
+      font-weight: 800;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    h1, h2, h3, h4 {
+      line-height: 1.3;
+      letter-spacing: -0.025em;
+    }
+
+    h1 {
+      position: relative;
+      z-index: 1;
+      max-width: 850px;
+      margin: 0;
+      font-size: clamp(2rem, 5vw, 4rem);
+    }
+
+    .hero-summary {
+      position: relative;
+      z-index: 1;
+      max-width: 810px;
+      margin: 20px 0 0;
+      color: var(--muted);
+      font-size: clamp(1rem, 2vw, 1.18rem);
+    }
+
+    .hero-meta {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 24px;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      min-height: 30px;
+      padding: 4px 10px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: var(--panel);
+      color: var(--muted);
+      font-size: 0.78rem;
+      font-weight: 650;
+    }
+
+    section {
+      margin-top: 26px;
+      padding: clamp(24px, 4vw, 42px);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--panel);
+      box-shadow: 0 8px 24px rgba(31, 54, 85, 0.045);
+    }
+
+    section > h2 {
+      margin: 0 0 19px;
+      font-size: clamp(1.45rem, 3vw, 2rem);
+    }
+
+    h3 {
+      margin: 2rem 0 0.65rem;
+      font-size: 1.2rem;
+    }
+
+    h4 {
+      margin: 1.4rem 0 0.5rem;
+      font-size: 1rem;
+    }
+
+    p { margin: 0.78rem 0; }
+
+    ul, ol {
+      padding-left: 1.35rem;
+    }
+
+    li + li { margin-top: 0.38rem; }
+
+    .lead {
+      color: var(--muted);
+      font-size: 1.04rem;
+    }
+
+    .callout {
+      margin: 1.2rem 0;
+      padding: 15px 17px;
+      border: 1px solid var(--line);
+      border-left: 4px solid var(--accent);
+      border-radius: 10px;
+      background: var(--accent-soft);
+    }
+
+    .callout.warning {
+      border-left-color: var(--warning);
+      background: var(--warning-soft);
+    }
+
+    .callout.danger {
+      border-left-color: var(--danger);
+      background: var(--danger-soft);
+    }
+
+    .callout strong { display: inline-block; margin-right: 0.25rem; }
+
+    .grid-2, .grid-3 {
+      display: grid;
+      gap: 15px;
+      margin: 1.2rem 0;
+    }
+
+    .grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+
+    .card {
+      padding: 17px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--panel-soft);
+    }
+
+    .card h3, .card h4 {
+      margin-top: 0;
+    }
+
+    .card p:last-child { margin-bottom: 0; }
+
+    .card .kicker {
+      color: var(--accent);
+      font-size: 0.74rem;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .architecture-map {
+      display: grid;
+      gap: 10px;
+      margin: 1.4rem 0;
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--panel-soft);
+    }
+
+    .arch-row {
+      display: grid;
+      grid-template-columns: 130px minmax(0, 1fr);
+      gap: 12px;
+      align-items: stretch;
+    }
+
+    .arch-label {
+      display: grid;
+      place-items: center;
+      min-height: 74px;
+      padding: 12px;
+      border-radius: 10px;
+      background: linear-gradient(145deg, var(--accent), var(--accent-2));
+      color: white;
+      text-align: center;
+      font-size: 0.86rem;
+      font-weight: 800;
+    }
+
+    .arch-items {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
+      gap: 9px;
+    }
+
+    .arch-item {
+      display: grid;
+      place-items: center;
+      min-height: 74px;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--panel);
+      text-align: center;
+      font-size: 0.85rem;
+      font-weight: 700;
+      line-height: 1.45;
+    }
+
+    .arrow {
+      color: var(--muted);
+      text-align: center;
+      font-size: 1.15rem;
+      line-height: 1;
+    }
+
+    .sequence {
+      display: grid;
+      gap: 9px;
+      margin: 1.2rem 0;
+      counter-reset: seq;
+    }
+
+    .sequence-step {
+      position: relative;
+      display: grid;
+      grid-template-columns: 38px minmax(0, 1fr);
+      gap: 12px;
+      align-items: start;
+      padding: 13px 15px;
+      border: 1px solid var(--line);
+      border-radius: 11px;
+      background: var(--panel-soft);
+      counter-increment: seq;
+    }
+
+    .sequence-step::before {
+      display: grid;
+      place-items: center;
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      background: var(--accent);
+      color: white;
+      content: counter(seq);
+      font-size: 0.82rem;
+      font-weight: 800;
+    }
+
+    .sequence-step strong { display: block; }
+    .sequence-step span { color: var(--muted); }
+
+    .table-wrap {
+      overflow-x: auto;
+      margin: 1.15rem 0;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--panel);
+      font-size: 0.9rem;
+    }
+
+    th, td {
+      padding: 11px 13px;
+      border-bottom: 1px solid var(--line);
+      vertical-align: top;
+      text-align: left;
+    }
+
+    tr:last-child td { border-bottom: 0; }
+
+    th {
+      background: var(--panel-soft);
+      color: var(--muted);
+      font-size: 0.76rem;
+      font-weight: 800;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+
+    td:first-child { font-weight: 650; }
+
+    .file-link {
+      white-space: nowrap;
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      font-size: 0.86em;
+    }
+
+    details {
+      margin: 0.85rem 0;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--panel-soft);
+    }
+
+    summary {
+      padding: 11px 14px;
+      cursor: pointer;
+      font-weight: 750;
+    }
+
+    details > div {
+      padding: 0 14px 13px;
+      color: var(--muted);
+    }
+
+    .metric-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+      margin: 1.1rem 0;
+    }
+
+    .metric {
+      padding: 15px;
+      border: 1px solid var(--line);
+      border-radius: 11px;
+      background: var(--panel-soft);
+      text-align: center;
+    }
+
+    .metric strong {
+      display: block;
+      color: var(--accent);
+      font-size: 1.45rem;
+      line-height: 1.2;
+    }
+
+    .metric span {
+      color: var(--muted);
+      font-size: 0.78rem;
+    }
+
+    .footer {
+      margin-top: 30px;
+      padding: 20px 0;
+      color: var(--muted);
+      text-align: center;
+      font-size: 0.82rem;
+    }
+
+    .back-to-top {
+      position: fixed;
+      right: 22px;
+      bottom: 22px;
+      z-index: 10;
+      display: grid;
+      place-items: center;
+      width: 42px;
+      height: 42px;
+      border: 1px solid var(--line);
+      border-radius: 50%;
+      background: var(--panel);
+      color: var(--accent);
+      text-decoration: none;
+      box-shadow: var(--shadow);
+      opacity: 0;
+      transform: translateY(8px);
+      pointer-events: none;
+      transition: opacity 150ms ease, transform 150ms ease;
+    }
+
+    .back-to-top.visible {
+      opacity: 1;
+      transform: translateY(0);
+      pointer-events: auto;
+    }
+
+    @media (max-width: 980px) {
+      .layout { grid-template-columns: 1fr; }
+      .sidebar {
+        position: relative;
+        width: auto;
+        height: auto;
+        padding: 18px 20px;
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+      }
+      .brand { margin-bottom: 12px; }
+      .toc-title, .sidebar-note { display: none; }
+      .toc {
+        display: flex;
+        overflow-x: auto;
+        padding-bottom: 4px;
+      }
+      .toc li { flex: 0 0 auto; }
+      .toc a { white-space: nowrap; }
+      main { padding-top: 24px; }
+    }
+
+    @media (max-width: 720px) {
+      .grid-2, .grid-3, .metric-grid { grid-template-columns: 1fr; }
+      .arch-row { grid-template-columns: 1fr; }
+      .arch-label { min-height: 48px; }
+      section { padding: 22px 18px; }
+      .hero { padding: 28px 21px; }
+      .hero::after { display: none; }
+      .file-link {
+        white-space: normal;
+        overflow-wrap: anywhere;
+      }
+    }
+
+    @media print {
+      :root {
+        --bg: white;
+        --panel: white;
+        --panel-soft: #f6f7f9;
+        --text: #111827;
+        --muted: #4b5563;
+        --line: #d1d5db;
+        --accent: #0c6178;
+        --accent-2: #147d69;
+        --accent-soft: #eef7f8;
+      }
+      body { background: white; font-size: 11pt; }
+      .layout { display: block; }
+      .sidebar, .back-to-top { display: none; }
+      main { padding: 0; }
+      .content { max-width: none; }
+      .hero, section { box-shadow: none; break-inside: avoid; }
+      section { border-radius: 8px; }
+      a { color: inherit; text-decoration: none; }
+      pre { white-space: pre-wrap; }
+    }
+  </style>
+</head>
+<body>
+  <div class="layout" id="top">
+    <aside class="sidebar" aria-label="文档目录">
+      <div class="brand">
+        <div class="brand-mark">H</div>
+        <div>
+          <strong>Hermes Agent</strong>
+          <small>源码与架构导读</small>
+        </div>
+      </div>
+      <p class="toc-title">Contents</p>
+      <nav>
+        <ol class="toc">
+          <li><a href="#summary">核心结论</a></li>
+          <li><a href="#overview">总体架构</a></li>
+          <li><a href="#entrypoints">启动入口</a></li>
+          <li><a href="#agent-loop">Agent 回合</a></li>
+          <li><a href="#prompt-cache">Prompt 与缓存</a></li>
+          <li><a href="#providers">Provider 与 Transport</a></li>
+          <li><a href="#tools">工具体系</a></li>
+          <li><a href="#surfaces">多端接入</a></li>
+          <li><a href="#sessions">会话与状态</a></li>
+          <li><a href="#learning">Skills / Memory / Context</a></li>
+          <li><a href="#plugins">插件架构</a></li>
+          <li><a href="#automation">Subagent 与 Cron</a></li>
+          <li><a href="#configuration">配置与 Profile</a></li>
+          <li><a href="#testing">测试体系</a></li>
+          <li><a href="#assessment">设计评价</a></li>
+          <li><a href="#change-map">修改入口选择</a></li>
+          <li><a href="#reading-path">阅读路线</a></li>
+        </ol>
+      </nav>
+      <div class="sidebar-note">
+        单文件、无外部依赖。可直接双击打开，也适合浏览器打印为 PDF。
+      </div>
+    </aside>
+
+    <main>
+      <div class="content">
+        <header class="hero">
+          <p class="eyebrow">Source Code &amp; Architecture Guide</p>
+          <h1>Hermes Agent 源代码与项目架构解读</h1>
+          <p class="hero-summary">
+            基于当前仓库真实代码整理，重点解释 Agent 窄腰、Prompt 缓存、Provider/Transport、
+            Tool Registry、多端接入、SessionDB、Skills、Memory、Plugin、Subagent 与 Cron 的职责边界。
+          </p>
+          <div class="hero-meta">
+            <span class="pill">中文</span>
+            <span class="pill">更新：2026-07-21</span>
+            <span class="pill">离线 HTML</span>
+            <span class="pill">源码导读</span>
+          </div>
+        </header>
+
+        <section id="summary">
+          <h2>1. 核心结论</h2>
+          <p class="lead">
+            Hermes Agent 是一个<strong>以同步 <code>AIAgent</code> 为窄腰、以插件和协议适配器向外扩展的模块化单体</strong>。
+            CLI、消息平台、TUI、Web Dashboard、Electron Desktop、ACP 和 Cron 看起来像多个产品，
+            但最终都复用同一套 Agent、工具、Provider、会话和学习基础设施。
+          </p>
+
+          <div class="grid-3">
+            <div class="card">
+              <div class="kicker">Narrow Waist</div>
+              <h3>统一 Agent 核心</h3>
+              <p>所有接入面最终调用 <code>AIAgent.run_conversation()</code>，平台差异留在输入、授权、排队和输出投影层。</p>
+            </div>
+            <div class="card">
+              <div class="kicker">Cache First</div>
+              <h3>Prompt 缓存优先</h3>
+              <p>系统提示词在会话内冻结并持久化；动态记忆、Skill、Steer 等通过消息或请求副本注入。</p>
+            </div>
+            <div class="card">
+              <div class="kicker">Edges Expand</div>
+              <h3>能力向边缘扩展</h3>
+              <p>优先使用现有代码、CLI + Skill、服务门控工具、Plugin 或 MCP，Core Tool 是最后选择。</p>
+            </div>
+          </div>
+
+          <div class="callout">
+            <strong>架构定位：</strong>
+            这不是微服务系统。它是一个 Python Agent 核心，加上 Node/React/Electron 外壳，
+            通过本地进程、PTY 和 JSON-RPC 组织起来的多端个人 Agent 运行时。
+          </div>
+        </section>
+
+        <section id="overview">
+          <h2>2. 总体架构</h2>
+
+          <div class="architecture-map" role="img" aria-label="Hermes Agent 分层架构图">
+            <div class="arch-row">
+              <div class="arch-label">接入层</div>
+              <div class="arch-items">
+                <div class="arch-item">Classic CLI<br>prompt_toolkit + Rich</div>
+                <div class="arch-item">Ink TUI<br>React + Node</div>
+                <div class="arch-item">Electron Desktop<br>React + assistant-ui</div>
+                <div class="arch-item">Web Dashboard<br>React + xterm.js</div>
+                <div class="arch-item">Messaging Gateway<br>20+ 平台</div>
+                <div class="arch-item">ACP / Cron / Batch / API</div>
+              </div>
+            </div>
+            <div class="arrow">↓</div>
+            <div class="arch-row">
+              <div class="arch-label">协议与路由层</div>
+              <div class="arch-items">
+                <div class="arch-item">HermesCLI</div>
+                <div class="arch-item">tui_gateway<br>JSON-RPC</div>
+                <div class="arch-item">GatewayRunner<br>授权 / 排队 / 投递</div>
+                <div class="arch-item">ACP Server</div>
+                <div class="arch-item">PTY Bridge</div>
+              </div>
+            </div>
+            <div class="arrow">↓</div>
+            <div class="arch-row">
+              <div class="arch-label">核心窄腰</div>
+              <div class="arch-items">
+                <div class="arch-item">AIAgent<br>同步 Agent Loop</div>
+                <div class="arch-item">TurnContext</div>
+                <div class="arch-item">TurnFinalizer</div>
+                <div class="arch-item">IterationBudget</div>
+              </div>
+            </div>
+            <div class="arrow">↓</div>
+            <div class="arch-row">
+              <div class="arch-label">基础设施层</div>
+              <div class="arch-items">
+                <div class="arch-item">Prompt / Compression / Cache</div>
+                <div class="arch-item">Provider Runtime / Transport</div>
+                <div class="arch-item">Tool Registry / Toolsets / MCP</div>
+                <div class="arch-item">SessionDB<br>SQLite + FTS5</div>
+                <div class="arch-item">Skills / Memory / Plugins</div>
+              </div>
+            </div>
+          </div>
+
+          <p>最重要的职责边界如下：</p>
+          <ul>
+            <li><strong>接入层：</strong>用户从哪里来、如何授权、如何展示、如何排队和打断。</li>
+            <li><strong>Agent 核心：</strong>模型调用、工具循环、重试、Fallback、压缩和回合收尾。</li>
+            <li><strong>Provider Transport：</strong>不同模型 API 的请求和响应格式。</li>
+            <li><strong>Tool Runtime：</strong>模型能看到哪些工具、工具调用能否执行、结果如何回写。</li>
+            <li><strong>SessionDB：</strong>跨进程、跨界面、跨重启的持久会话。</li>
+            <li><strong>Learning Layer：</strong>长期记忆、程序性知识和上下文管理，但不得破坏提示缓存。</li>
+          </ul>
+
+          <h3>核心源码地图</h3>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>职责</th><th>核心文件</th><th>说明</th></tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>启动与子命令</td>
+                  <td><a class="file-link" href="../hermes_cli/main.py">hermes_cli/main.py</a></td>
+                  <td><code>hermes</code> 入口、Profile、CLI/TUI、Gateway、Dashboard、ACP、Cron 等路由。</td>
+                </tr>
+                <tr>
+                  <td>Classic CLI</td>
+                  <td><a class="file-link" href="../cli.py">cli.py</a></td>
+                  <td>输入、补全、皮肤、Slash 命令、交互审批和 Agent 装配。</td>
+                </tr>
+                <tr>
+                  <td>Agent 门面</td>
+                  <td><a class="file-link" href="../run_agent.py">run_agent.py</a></td>
+                  <td><code>AIAgent</code> 公共接口、兼容导出和薄转发。</td>
+                </tr>
+                <tr>
+                  <td>回合循环</td>
+                  <td><a class="file-link" href="../agent/conversation_loop.py">agent/conversation_loop.py</a></td>
+                  <td>模型调用、工具循环、重试、Fallback、压缩和中断。</td>
+                </tr>
+                <tr>
+                  <td>工具编排</td>
+                  <td><a class="file-link" href="../model_tools.py">model_tools.py</a> / <a class="file-link" href="../tools/registry.py">tools/registry.py</a></td>
+                  <td>工具 Schema、注册、服务门控、Middleware、Hook 与分发。</td>
+                </tr>
+                <tr>
+                  <td>会话存储</td>
+                  <td><a class="file-link" href="../hermes_state.py">hermes_state.py</a></td>
+                  <td>SQLite、WAL、FTS5、会话谱系、搜索和回滚。</td>
+                </tr>
+                <tr>
+                  <td>消息网关</td>
+                  <td><a class="file-link" href="../gateway/run.py">gateway/run.py</a></td>
+                  <td>平台适配、授权、Session Key、Agent Cache、排队、打断和投递。</td>
+                </tr>
+                <tr>
+                  <td>TUI/Desktop 后端</td>
+                  <td><a class="file-link" href="../tui_gateway/server.py">tui_gateway/server.py</a></td>
+                  <td>统一 JSON-RPC 方法、Session、流式事件和 Agent 执行。</td>
+                </tr>
+                <tr>
+                  <td>插件</td>
+                  <td><a class="file-link" href="../hermes_cli/plugins.py">hermes_cli/plugins.py</a></td>
+                  <td>通用 Plugin、Hook、Middleware、Tool、Platform、Command 等。</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section id="entrypoints">
+          <h2>3. 启动入口与运行形态</h2>
+          <p>
+            安装后的命令入口由 <a class="file-link" href="../pyproject.toml">pyproject.toml</a> 声明：
+          </p>
+          <pre><code>[project.scripts]
+hermes = "hermes_cli.main:main"</code></pre>
+
+          <p>聊天启动链可以简化为：</p>
+          <pre><code>hermes
+  → hermes_cli.main.main()
+  → cmd_chat()
+      ├─ classic CLI → cli.main() → HermesCLI
+      └─ TUI         → Node Ink TUI → tui_gateway.entry</code></pre>
+
+          <div class="grid-2">
+            <div class="card">
+              <h3><code>hermes_cli/main.py</code></h3>
+              <p>产品级进程路由器。处理 Profile、Windows/Termux 启动、Setup、Gateway、Dashboard、Desktop、Cron、ACP、升级和恢复。</p>
+            </div>
+            <div class="card">
+              <h3><code>cli.py</code></h3>
+              <p>经典聊天界面。处理 prompt_toolkit、Rich、皮肤、Slash 命令、图片附加、Agent 构造和交互式审批。</p>
+            </div>
+          </div>
+
+          <div class="callout warning">
+            <strong>阅读提示：</strong>
+            <code>hermes_cli/main.py</code> 负责“启动哪个产品面”，<code>cli.py</code> 负责“经典终端怎么交互”，
+            <code>run_agent.py</code> 与 <code>agent/</code> 才负责“Agent 怎么执行”。
+          </div>
+        </section>
+
+        <section id="agent-loop">
+          <h2>4. 一次 Agent 回合如何运行</h2>
+          <p class="lead">
+            <code>run_agent.AIAgent</code> 仍是公共门面，但主要实现已经拆到 <code>agent/</code>，
+            以兼容旧调用者和大量 <code>patch("run_agent.X")</code> 测试。
+          </p>
+
+          <div class="sequence">
+            <div class="sequence-step">
+              <div><strong>构造 TurnContext</strong><span>清理输入、恢复历史、生成 Turn ID、恢复系统提示词、调用插件和记忆预取。</span></div>
+            </div>
+            <div class="sequence-step">
+              <div><strong>进入预算循环</strong><span>检查用户中断、消耗共享 IterationBudget、记录 Activity 和 Step Callback。</span></div>
+            </div>
+            <div class="sequence-step">
+              <div><strong>构造 Provider 请求副本</strong><span>修复消息序列、按需压缩、注入动态上下文、应用缓存标记和 Provider 兼容修复。</span></div>
+            </div>
+            <div class="sequence-step">
+              <div><strong>调用模型</strong><span>执行 LLM Middleware、请求 Hook、优先流式调用，并检测中断、静默挂起和 Provider 错误。</span></div>
+            </div>
+            <div class="sequence-step">
+              <div><strong>标准化响应</strong><span>将 Chat Completions、Responses、Anthropic、Bedrock 等结果统一为 content、tool_calls、reasoning、usage。</span></div>
+            </div>
+            <div class="sequence-step">
+              <div><strong>执行工具或完成回合</strong><span>有 Tool Calls 则执行并继续循环；有最终文本则进入 TurnFinalizer。</span></div>
+            </div>
+            <div class="sequence-step">
+              <div><strong>统一收尾</strong><span>修复角色序列、持久化、清理资源、触发 Hook、同步记忆并返回统一结果。</span></div>
+            </div>
+          </div>
+
+          <pre><code>result = agent.run_conversation(user_message, conversation_history=history)
+
+# 统一结果大致包含：
+{
+  "final_response": "...",
+  "messages": [...],
+  "api_calls": 4,
+  "completed": true,
+  "failed": false,
+  "interrupted": false,
+  "model": "...",
+  "provider": "...",
+  "input_tokens": 12345,
+  "cache_read_tokens": 10000
+}</code></pre>
+
+          <h3>实现拆分</h3>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>阶段</th><th>文件</th><th>主要职责</th></tr></thead>
+              <tbody>
+                <tr><td>Agent 初始化</td><td><a class="file-link" href="../agent/agent_init.py">agent/agent_init.py</a></td><td>Provider、Tools、Session、Memory、Compressor、Checkpoint 装配。</td></tr>
+                <tr><td>回合初始化</td><td><a class="file-link" href="../agent/turn_context.py">agent/turn_context.py</a></td><td>一次性准备本回合状态和临时上下文。</td></tr>
+                <tr><td>主循环</td><td><a class="file-link" href="../agent/conversation_loop.py">agent/conversation_loop.py</a></td><td>模型、重试、Fallback、工具、压缩和中断。</td></tr>
+                <tr><td>工具执行</td><td><a class="file-link" href="../agent/tool_executor.py">agent/tool_executor.py</a></td><td>并发、串行、安全审批、Checkpoint、结果预算。</td></tr>
+                <tr><td>回合收尾</td><td><a class="file-link" href="../agent/turn_finalizer.py">agent/turn_finalizer.py</a></td><td>持久化、Hook、资源清理、诊断和最终返回。</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section id="prompt-cache">
+          <h2>5. System Prompt 与提示缓存</h2>
+          <p>
+            系统提示词由 <a class="file-link" href="../agent/system_prompt.py">agent/system_prompt.py</a>
+            按三层构造，并缓存到 <code>agent._cached_system_prompt</code>：
+          </p>
+
+          <div class="grid-3">
+            <div class="card">
+              <div class="kicker">Stable</div>
+              <h3>稳定层</h3>
+              <p>SOUL/默认身份、工具规范、Skills 索引、平台提示、环境信息、模型家族规则。</p>
+            </div>
+            <div class="card">
+              <div class="kicker">Context</div>
+              <h3>上下文层</h3>
+              <p>调用者 System Message、AGENTS.md、CLAUDE.md、<code>.cursorrules</code> 等项目文件。</p>
+            </div>
+            <div class="card">
+              <div class="kicker">Session Frozen</div>
+              <h3>会话冻结层</h3>
+              <p>MEMORY/USER 快照、Provider 静态说明、时间、Session、Model 和 Provider 身份。</p>
+            </div>
+          </div>
+
+          <p>
+            构造后的完整字符串会写入 <code>SessionDB.sessions.system_prompt</code>。Gateway 后续重新创建
+            <code>AIAgent</code> 时优先从数据库恢复完全相同的字符串，而不是重新扫描磁盘。
+          </p>
+
+          <div class="callout">
+            <strong>关键策略：</strong>
+            外部记忆召回、Plugin 动态上下文、MoA 上下文、Prefill、Anthropic Cache Control、Gateway 恢复说明等，
+            只写入本轮 API 请求副本或当前消息，不改持久化 System Prompt。
+          </div>
+
+          <h3>为什么消息副本与持久历史分离</h3>
+          <ul>
+            <li>避免内部提示进入长期 Transcript。</li>
+            <li>避免恢复 Session 时把 Memory Context 误当成用户原话。</li>
+            <li>保持严格的 User / Assistant / Tool 角色关系。</li>
+            <li>允许不同 Provider 在发送前做协议级修复，不污染规范消息。</li>
+          </ul>
+
+          <details>
+            <summary>哪些操作会正常打破缓存？</summary>
+            <div>
+              显式切换 Model/Provider、进入新的 Session、某些压缩或运行时模式切换会导致 Prompt 身份或缓存键变化。
+              普通用户回合、Skill 调用、Goal Continuation 和动态 Memory Prefetch 不应该重建 System Prompt。
+            </div>
+          </details>
+        </section>
+
+        <section id="providers">
+          <h2>6. Provider、Runtime 与 Transport</h2>
+          <p>模型接入被拆为三个不同问题：</p>
+
+          <div class="grid-3">
+            <div class="card">
+              <h3>ProviderProfile</h3>
+              <p>声明服务特性：名称、别名、认证、Base URL、API Mode、Vision、Header、Token 限制和请求特殊参数。</p>
+            </div>
+            <div class="card">
+              <h3>Runtime Provider</h3>
+              <p>解析本次调用的实际 Model、凭据、Base URL、API Mode、OAuth/Key、Credential Pool 和 Fallback。</p>
+            </div>
+            <div class="card">
+              <h3>Transport</h3>
+              <p>负责网络线协议：消息转换、工具 Schema、请求参数、响应校验和统一标准化。</p>
+            </div>
+          </div>
+
+          <pre><code>Provider Profile = 这个服务具有什么能力和约束
+Runtime Provider = 这次具体用哪个模型、地址与凭据
+Transport        = 请求和响应在网络线上长什么样</code></pre>
+
+          <p>Provider 插件位于：</p>
+          <pre><code>plugins/model-providers/&lt;provider&gt;/
+├── __init__.py
+└── plugin.yaml</code></pre>
+
+          <p>主要 API 模式包括：</p>
+          <ul>
+            <li><code>chat_completions</code>：OpenAI 兼容接口。</li>
+            <li><code>codex_responses</code>：OpenAI Responses/Codex 风格接口。</li>
+            <li><code>anthropic_messages</code>：Anthropic Messages。</li>
+            <li><code>bedrock_converse</code>：AWS Bedrock Converse。</li>
+            <li><code>codex_app_server</code>：可选的整回合旁路运行时。</li>
+          </ul>
+
+          <p>
+            所有 Transport 最终归一化到相同内部响应，使 Conversation Loop 不必分别理解每个 Provider 的 Tool Call 和 Reasoning 格式。
+          </p>
+        </section>
+
+        <section id="tools">
+          <h2>7. Tool Registry、Toolset 与执行安全</h2>
+          <p>
+            每个内置工具文件在模块顶层调用 <code>registry.register()</code>。发现器通过 AST 判断
+            <code>tools/*.py</code> 是否包含顶层注册调用，再导入真正的工具模块。
+          </p>
+
+          <pre><code>tools/registry.py
+      ↑
+tools/*.py              # 模块导入时自注册
+      ↑
+model_tools.py          # Schema 组装与统一分发
+      ↑
+run_agent / CLI / Gateway / Cron / ACP</code></pre>
+
+          <h3>一个工具条目包含什么</h3>
+          <ul>
+            <li>工具名称和 JSON Schema。</li>
+            <li>Handler。</li>
+            <li>所属 Toolset。</li>
+            <li><code>check_fn</code> 服务可用性检查。</li>
+            <li>是否异步、环境变量要求、显示 Emoji。</li>
+            <li>最大结果大小和动态 Schema Override。</li>
+          </ul>
+
+          <h3>Toolset 的作用</h3>
+          <p>
+            Toolset 把工具组合成 <code>web</code>、<code>terminal</code>、<code>file</code>、
+            <code>browser</code>、<code>coding</code>、<code>hermes-cli</code>、
+            <code>hermes-cron</code>、<code>hermes-acp</code> 等平台或场景集合。
+          </p>
+
+          <div class="callout warning">
+            <strong>Webhook 特例：</strong>
+            公共 Webhook 可能携带 PR 标题、评论等不可信内容，因此默认只暴露受限 Web/Vision/Clarify 能力，
+            不授予终端和文件写入。
+          </div>
+
+          <h3>工具调用流水线</h3>
+          <pre><code>模型参数
+  → 按 Schema 修正类型
+  → Tool Search Bridge 解包与 Scope 检查
+  → Tool Request Middleware
+  → Plugin pre_tool_call
+  → Block / Approve
+  → ACP 编辑审批
+  → Checkpoint
+  → Registry.dispatch()
+  → Tool Execution Middleware
+  → post_tool_call
+  → transform_tool_result
+  → 结果写回消息历史</code></pre>
+
+          <h3>并发执行</h3>
+          <ul>
+            <li>最多 8 个工具 Worker。</li>
+            <li>只读工具或路径互不冲突的文件操作可并发。</li>
+            <li>结果仍按模型原始 Tool Call 顺序写回。</li>
+            <li>传播 ContextVar、Profile 和审批回调。</li>
+            <li>支持 Worker 级精确中断、Heartbeat 和超时。</li>
+            <li>按模型 Context Window 缩放工具输出预算，过大结果可落盘。</li>
+          </ul>
+
+          <div class="callout">
+            <strong>为什么 Core Tool 门槛高：</strong>
+            工具 Schema 会随每次模型请求发送。Core Tool 越多，所有用户每回合承担的 Token、延迟和模型选择负担越大。
+          </div>
+        </section>
+
+        <section id="surfaces">
+          <h2>8. CLI、TUI、Dashboard、Desktop、Gateway 与 ACP</h2>
+
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>界面</th><th>技术栈</th><th>如何接入 Agent</th><th>关键边界</th></tr></thead>
+              <tbody>
+                <tr><td>Classic CLI</td><td>Python、prompt_toolkit、Rich</td><td>直接持有 <code>AIAgent</code></td><td>经典终端交互、审批、皮肤和 Slash。</td></tr>
+                <tr><td>Ink TUI</td><td>Node、React、Ink、Nanostores</td><td>stdio JSON-RPC → <code>tui_gateway</code></td><td>TypeScript 负责屏幕，Python 负责 Session 与 Agent。</td></tr>
+                <tr><td>Web Dashboard</td><td>React、xterm.js、FastAPI</td><td>PTY 嵌入真实 Ink TUI；侧栏使用 JSON-RPC</td><td>主 Transcript/Composer 不在 React 中重写。</td></tr>
+                <tr><td>Electron Desktop</td><td>Electron、React、assistant-ui、Nanostores</td><td>WebSocket JSON-RPC → Headless <code>hermes serve</code></td><td>独立聊天 UI，不依赖 Dashboard 前端。</td></tr>
+                <tr><td>Messaging Gateway</td><td>Python asyncio、多平台 Adapter</td><td>Executor 中运行同步 <code>AIAgent</code></td><td>授权、Session Key、排队、打断、缓存和投递。</td></tr>
+                <tr><td>ACP</td><td>Python ACP Server</td><td>ThreadPool 中运行同步 <code>AIAgent</code></td><td>编辑器协议、资源附件、权限和 Session 映射。</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h3>Ink TUI</h3>
+          <pre><code>Ink TUI
+  → prompt.submit
+  → tui_gateway.server
+  → AIAgent.run_conversation()
+  → message.delta / tool.start / message.complete
+  → Ink TUI</code></pre>
+
+          <h3>Web Dashboard</h3>
+          <pre><code>Browser xterm.js
+  → /api/pty WebSocket
+  → FastAPI PTY Bridge
+  → node ui-tui/dist/entry.js
+  → tui_gateway
+  → AIAgent</code></pre>
+          <p>
+            Dashboard 的主聊天区是真实 TUI 的终端渲染。React 适合做 Sidebar、Inspector、Session List 和状态面板，
+            不应复制一套主 Transcript/Composer。
+          </p>
+
+          <h3>Electron Desktop</h3>
+          <p>
+            Desktop 是独立聊天面，通过 <code>apps/shared</code> 的框架无关 JSON-RPC Client 与后端通信。
+            Slash Palette 使用本地命令规格表做 UI 归类，但 Skill 与用户 Quick Commands 作为 Extension 必须从后端 Catalog 透传。
+          </p>
+
+          <h3>Gateway 的 Agent Cache</h3>
+          <pre><code>platform / chat / thread / user
+  → session_key
+  → LRU cached AIAgent
+  → 下回合复用</code></pre>
+          <p>
+            Gateway 会比较 SQLite 中的 <code>message_count</code>，检测其他进程是否修改了同一 Session；
+            一旦发现持久历史变化，就丢弃陈旧 Agent Cache 并从数据库重建。
+          </p>
+        </section>
+
+        <section id="sessions">
+          <h2>9. SessionDB 与状态模型</h2>
+          <p>
+            <a class="file-link" href="../hermes_state.py">hermes_state.py</a> 中的 <code>SessionDB</code>
+            是规范会话存储，JSON Snapshot 只是可选兼容输出。
+          </p>
+
+          <div class="grid-2">
+            <div class="card">
+              <h3>存储能力</h3>
+              <ul>
+                <li>SQLite + WAL。</li>
+                <li>NFS/SMB/FUSE 下回退 DELETE Journal。</li>
+                <li>Session 与 Message 表。</li>
+                <li>FTS5 与 CJK Trigram 搜索。</li>
+                <li>标题、来源、Model Config。</li>
+              </ul>
+            </div>
+            <div class="card">
+              <h3>会话生命周期</h3>
+              <ul>
+                <li>Branch 与 Compression Lineage。</li>
+                <li>Delegate Child。</li>
+                <li>Rewind / Undo。</li>
+                <li>Gateway Routing。</li>
+                <li>Compression Lock 与 Cooldown。</li>
+              </ul>
+            </div>
+          </div>
+
+          <pre><code>Gateway 路由身份：session_key
+持久对话身份：session_id
+
+同一个 session_key 可以切换到不同 session_id；
+压缩可以旋转 session_id，但保持平台路由不变。</code></pre>
+
+          <p>
+            Tool Executor 还会在重要工具步骤后增量刷新 SessionDB，避免 Agent 执行重启或破坏性工具后，
+            已完成的 Tool Call/Result 因进程退出而丢失。
+          </p>
+        </section>
+
+        <section id="learning">
+          <h2>10. Skills、Memory 与 Context Engine</h2>
+
+          <h3>内置 Memory：冻结快照</h3>
+          <pre><code>$HERMES_HOME/memories/MEMORY.md
+$HERMES_HOME/memories/USER.md</code></pre>
+          <ol>
+            <li>Agent 创建时读取文件并进行威胁扫描。</li>
+            <li>生成 System Prompt 快照。</li>
+            <li>会话中 <code>memory</code> 工具可以立即写磁盘。</li>
+            <li>当前会话的 Prompt 快照不变。</li>
+            <li>新会话才加载更新后的内容。</li>
+          </ol>
+
+          <h3>外部 Memory Provider</h3>
+          <p>
+            <code>MemoryProvider</code> 提供初始化、静态 Prompt Block、动态 Prefetch、回合同步、工具 Schema、
+            压缩前提取、Session 切换和 Session 结束 Hook。系统只允许一个外部 Provider，避免 Schema 膨胀和多后端写入冲突。
+          </p>
+
+          <div class="callout">
+            动态 <code>prefetch()</code> 结果作为本回合临时 Memory Context 注入，不修改已缓存 System Prompt。
+            回合结束同步在单 Worker 后台线程串行执行，不阻塞用户收到回答。
+          </div>
+
+          <h3>Skills：渐进式披露</h3>
+          <pre><code>System Prompt：Skill 名称和描述索引
+        ↓
+skill_view(name)
+        ↓
+完整 SKILL.md
+        ↓
+按需读取 references / scripts / templates / assets</code></pre>
+          <p>
+            <code>/skill-name</code> 调用会把完整 Skill 内容包装成当前 User 消息，而不是修改 System Prompt。
+            MemoryManager 能识别 Skill 脚手架，只把真实用户指令写入外部记忆。
+          </p>
+
+          <h3>Context Engine</h3>
+          <p>默认 <code>ContextCompressor</code> 负责：</p>
+          <ul>
+            <li>根据 Context Window 计算压缩阈值。</li>
+            <li>保护开头目标与当前任务尾部。</li>
+            <li>对中间区域生成摘要。</li>
+            <li>保持 Tool Call/Result 配对。</li>
+            <li>支持 Focus Compression、Session Split 和 In-Place Compaction。</li>
+            <li>压缩失败时记录 Session 级 Cooldown，避免每回合重复失败。</li>
+          </ul>
+        </section>
+
+        <section id="plugins">
+          <h2>11. Plugin 与专用 Provider Registry</h2>
+          <p>通用 PluginManager 的发现来源：</p>
+          <ol>
+            <li>仓库内 Bundled Plugins。</li>
+            <li><code>$HERMES_HOME/plugins/</code> 用户插件。</li>
+            <li><code>./.hermes/plugins/</code> 项目插件，需明确开启。</li>
+            <li>Pip Entry Points。</li>
+          </ol>
+
+          <p>通用插件可以注册 Tool、Hook、Middleware、Slash/CLI Command、Platform、Skill、Dashboard 页面和多类 Provider。</p>
+
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>扩展类型</th><th>协调器</th><th>选择方式</th></tr></thead>
+              <tbody>
+                <tr><td>通用插件</td><td><code>hermes_cli/plugins.py</code></td><td>可启用多个</td></tr>
+                <tr><td>Model Provider</td><td><code>providers/__init__.py</code></td><td>按调用选择</td></tr>
+                <tr><td>Memory Provider</td><td><code>plugins/memory/</code></td><td>单选</td></tr>
+                <tr><td>Context Engine</td><td><code>plugins/context_engine/</code></td><td>单选</td></tr>
+                <tr><td>Platform</td><td><code>gateway/platform_registry.py</code></td><td>可启用多个</td></tr>
+                <tr><td>MCP</td><td><code>tools/mcp_tool.py</code></td><td>多 Server、动态工具</td></tr>
+                <tr><td>Web/Image/Video/Browser</td><td>对应 <code>agent/*_registry.py</code></td><td>按类别配置</td></tr>
+                <tr><td>Secret Source</td><td><code>agent/secret_sources/registry.py</code></td><td>可组合、有优先级</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <p>
+            Hermes 不追求一个万能 Plugin API：通用行为用 Hook/Middleware；具有 Provider 语义的能力用 ABC + Registry；
+            结构化外部工具用 MCP；操作流程和知识用 Skill。
+          </p>
+        </section>
+
+        <section id="automation">
+          <h2>12. Subagent 与 Cron</h2>
+
+          <div class="grid-2">
+            <div class="card">
+              <h3>Subagent</h3>
+              <ul>
+                <li>全新历史和独立 Task/Session ID。</li>
+                <li>继承 Provider、Model、Reasoning 和 Fallback。</li>
+                <li>默认跳过 Memory。</li>
+                <li>工具集被收窄，Leaf 不可递归委派。</li>
+                <li>父 Agent 只看到最终摘要。</li>
+                <li>支持后台 Fan-out、并发上限和最大深度。</li>
+              </ul>
+            </div>
+            <div class="card">
+              <h3>Cron</h3>
+              <ul>
+                <li>每次触发创建全新受限 Agent。</li>
+                <li>禁用 cronjob、messaging、clarify。</li>
+                <li>跳过用户 Memory，防止自动任务污染画像。</li>
+                <li>支持 Skill、Workdir、MCP 和多平台投递。</li>
+                <li>Provider/Model Drift 失败关闭，防止意外消费。</li>
+                <li>使用无活动时间检测挂起，而非简单总时长。</li>
+              </ul>
+            </div>
+          </div>
+
+          <p>
+            两者都没有实现另一套 Agent：只是用不同的 Session、Prompt、Toolset 和安全策略重新实例化主 <code>AIAgent</code>。
+          </p>
+        </section>
+
+        <section id="configuration">
+          <h2>13. 配置、Secret 与 Profile 隔离</h2>
+          <p><code>get_hermes_home()</code> 是用户状态路径的单一事实来源。</p>
+
+          <pre><code>~/.hermes/
+├── config.yaml       # 行为与配置
+├── .env              # API Key / Token / 密码
+├── state.db          # 会话规范存储
+├── memories/
+├── skills/
+├── plugins/
+├── cron/
+├── logs/
+└── profiles/
+    └── coder/
+        ├── config.yaml
+        ├── .env
+        ├── state.db
+        ├── memories/
+        ├── skills/
+        └── plugins/</code></pre>
+
+          <p>Profile 本质上是独立的 <code>HERMES_HOME</code>，因此配置、凭据、SOUL、Memory、Skills、Plugins、SessionDB、Cron 和 Gateway 都隔离。</p>
+
+          <div class="callout warning">
+            <strong>配置原则：</strong>
+            用户行为、阈值、显示和启用状态进入 <code>config.yaml</code>；Secret 进入 <code>.env</code>。
+            某些历史代码仍用内部环境变量做进程桥接，但不应继续用新环境变量扩大用户行为配置面。
+          </div>
+        </section>
+
+        <section id="testing">
+          <h2>14. 测试体系与工程规模</h2>
+          <div class="metric-grid">
+            <div class="metric"><strong>2,052</strong><span>测试文件</span></div>
+            <div class="metric"><strong>2,945</strong><span>Python 文件</span></div>
+            <div class="metric"><strong>1,272</strong><span>TypeScript / TSX 文件</span></div>
+            <div class="metric"><strong>20,953</strong><span>gateway/run.py 行数</span></div>
+          </div>
+
+          <p>规范测试入口为 <a class="file-link" href="../scripts/run_tests.sh">scripts/run_tests.sh</a>，它会：</p>
+          <ul>
+            <li>每个测试文件使用全新 Python 子进程。</li>
+            <li>使用 <code>env -i</code> 清空环境，避免真实凭据泄漏。</li>
+            <li>固定 UTC、UTF-8 和 Python Hash Seed。</li>
+            <li>并行运行测试文件，但避免模块级 Registry/Cache 在文件间泄漏。</li>
+            <li>默认排除 Integration Tests。</li>
+          </ul>
+
+          <p>测试最密集区域是 Gateway、<code>hermes_cli</code>、Tools、Agent 和 <code>run_agent</code>，与项目真实风险分布一致。</p>
+        </section>
+
+        <section id="assessment">
+          <h2>15. 架构优点、成本与风险</h2>
+
+          <div class="grid-2">
+            <div class="card">
+              <h3>主要优点</h3>
+              <ul>
+                <li>Prompt 缓存约束落实到数据库恢复、Skill 和 Memory 机制。</li>
+                <li>所有界面共享同一 Agent 核心，行为不易分叉。</li>
+                <li>Provider 差异由 Profile、Runtime、Transport 分层吸收。</li>
+                <li>工具前后有 Scope、审批、Checkpoint、Middleware 和 Hook。</li>
+                <li>长驻进程、中断、重启和跨平台失败恢复非常成熟。</li>
+              </ul>
+            </div>
+            <div class="card">
+              <h3>主要成本</h3>
+              <ul>
+                <li>Gateway、Classic CLI 和 TUI Gateway 仍是超大编排文件。</li>
+                <li>Plugin、Provider、MCP、Skill 等扩展面较多，学习曲线高。</li>
+                <li>同步 Agent 与异步外壳之间需要复杂 Executor 和 ContextVar 桥。</li>
+                <li>Import-Time Registry、Thread Local 和环境变量带来隐藏耦合。</li>
+                <li>兼容旧测试和第三方调用导致薄转发与间接访问较多。</li>
+              </ul>
+            </div>
+          </div>
+
+          <h3>当前大文件热点</h3>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>文件</th><th>约行数</th><th>风险</th></tr></thead>
+              <tbody>
+                <tr><td><code>gateway/run.py</code></td><td>20,953</td><td>生命周期、平台特例、Session、缓存、并发和投递混合。</td></tr>
+                <tr><td><code>cli.py</code></td><td>16,274</td><td>UI、命令、Session 和 Agent 编排混合。</td></tr>
+                <tr><td><code>hermes_cli/main.py</code></td><td>14,715</td><td>几乎所有产品子命令和启动恢复逻辑。</td></tr>
+                <tr><td><code>tui_gateway/server.py</code></td><td>14,318</td><td>大量 JSON-RPC 方法、Session 和 UI 事件投影。</td></tr>
+                <tr><td><code>hermes_state.py</code></td><td>6,459</td><td>Schema、迁移、搜索、恢复和多种 Session 语义。</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="callout">
+            这是一套“生产事故驱动”的成熟代码：大量 Issue 编号和看似重复的保护分支通常在维护真实不变量。
+            修改前应先追踪原始意图，而不是把复杂性一律视为可删除代码。
+          </div>
+        </section>
+
+        <section id="change-map">
+          <h2>16. 修改功能时应该落在哪一层</h2>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>需求</th><th>首选实现位置</th><th>应避免</th></tr></thead>
+              <tbody>
+                <tr><td>新模型 Provider</td><td><code>plugins/model-providers/&lt;name&gt;</code> + ProviderProfile</td><td>在 Agent Loop 中新增整套 Provider 分支</td></tr>
+                <tr><td>新模型线协议</td><td><code>agent/transports/</code></td><td>在各处判断 Provider 名称</td></tr>
+                <tr><td>新消息平台</td><td>Platform Plugin + PlatformEntry + Adapter</td><td>在 Gateway Core 中硬编码平台实现</td></tr>
+                <tr><td>新 Web/Image/Browser 后端</td><td>对应 Provider ABC/Registry Plugin</td><td>新增平行 Core Tool</td></tr>
+                <tr><td>新结构化外部能力</td><td>MCP Server</td><td>无条件新增 Core Tool Schema</td></tr>
+                <tr><td>配置/运维能力</td><td>CLI 子命令 + Skill</td><td>直接暴露底层 Model Tool</td></tr>
+                <tr><td>新 Slash Alias</td><td><code>COMMAND_REGISTRY</code></td><td>分别修改 CLI/Gateway/Telegram/Slack</td></tr>
+                <tr><td>Dashboard 主聊天能力</td><td>修改 Ink TUI</td><td>在 React 中复制 Transcript/Composer</td></tr>
+                <tr><td>Dashboard 辅助面板</td><td>React Sidebar / Inspector</td><td>依赖 PTY 内部私有状态</td></tr>
+                <tr><td>Desktop Slash</td><td><code>desktop-slash-commands.ts</code> + 现有 RPC</td><td>为已有 Catalog 重复增加 RPC</td></tr>
+                <tr><td>新 Memory 后端</td><td>MemoryProvider Plugin</td><td>多个外部后端同时注入 Core</td></tr>
+                <tr><td>新 Context 策略</td><td>Context Engine Plugin</td><td>在 Conversation Loop 堆积分支</td></tr>
+                <tr><td>可复用操作流程</td><td>Skill</td><td>新增 Core Python Surface</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section id="reading-path">
+          <h2>17. 推荐源码阅读路线</h2>
+
+          <h3>路线 A：理解 Agent 回合</h3>
+          <ol>
+            <li><a class="file-link" href="../run_agent.py">run_agent.py</a>：AIAgent 公共接口和薄转发。</li>
+            <li><a class="file-link" href="../agent/agent_init.py">agent/agent_init.py</a>：Provider、Tools、Memory、Compressor 装配。</li>
+            <li><a class="file-link" href="../agent/turn_context.py">agent/turn_context.py</a>：回合初始化。</li>
+            <li><a class="file-link" href="../agent/conversation_loop.py">agent/conversation_loop.py</a>：主循环。</li>
+            <li><a class="file-link" href="../agent/tool_executor.py">agent/tool_executor.py</a>：工具执行。</li>
+            <li><a class="file-link" href="../agent/turn_finalizer.py">agent/turn_finalizer.py</a>：回合收尾。</li>
+          </ol>
+
+          <h3>路线 B：理解 Prompt 与学习</h3>
+          <ol>
+            <li><a class="file-link" href="../agent/system_prompt.py">agent/system_prompt.py</a></li>
+            <li><a class="file-link" href="../agent/prompt_builder.py">agent/prompt_builder.py</a></li>
+            <li><a class="file-link" href="../tools/memory_tool.py">tools/memory_tool.py</a></li>
+            <li><a class="file-link" href="../agent/memory_manager.py">agent/memory_manager.py</a></li>
+            <li><a class="file-link" href="../agent/skill_commands.py">agent/skill_commands.py</a></li>
+            <li><a class="file-link" href="../agent/context_compressor.py">agent/context_compressor.py</a></li>
+          </ol>
+
+          <h3>路线 C：理解工具和插件</h3>
+          <ol>
+            <li><a class="file-link" href="../tools/registry.py">tools/registry.py</a></li>
+            <li><a class="file-link" href="../toolsets.py">toolsets.py</a></li>
+            <li><a class="file-link" href="../model_tools.py">model_tools.py</a></li>
+            <li><a class="file-link" href="../hermes_cli/plugins.py">hermes_cli/plugins.py</a></li>
+            <li>选择一个简单工具，再阅读 <code>terminal_tool.py</code> 或 <code>delegate_tool.py</code>。</li>
+          </ol>
+
+          <h3>路线 D：理解多端接入</h3>
+          <ol>
+            <li><a class="file-link" href="../cli.py">cli.py</a></li>
+            <li><a class="file-link" href="../gateway/run.py">gateway/run.py</a></li>
+            <li><a class="file-link" href="../gateway/session.py">gateway/session.py</a></li>
+            <li><a class="file-link" href="../tui_gateway/server.py">tui_gateway/server.py</a></li>
+            <li><a class="file-link" href="../ui-tui/src/entry.tsx">ui-tui/src/entry.tsx</a></li>
+            <li><a class="file-link" href="../web/src/pages/ChatPage.tsx">web/src/pages/ChatPage.tsx</a></li>
+            <li><a class="file-link" href="../apps/desktop/src/lib/desktop-slash-commands.ts">apps/desktop/src/lib/desktop-slash-commands.ts</a></li>
+            <li><a class="file-link" href="../acp_adapter/server.py">acp_adapter/server.py</a></li>
+          </ol>
+
+          <div class="callout danger">
+            <strong>阅读源码前始终记住：</strong>
+            System Prompt 不能在普通会话中漂移；Tool Schema 不能无节制扩张；
+            所有接入层必须保持同一套消息、Session 和工具语义。
+          </div>
+        </section>
+
+        <footer class="footer">
+          <p>Hermes Agent 源代码与项目架构解读 · 基于 2026-07-21 当前工作树整理</p>
+          <p>本文件为独立 HTML 文档，无外部字体、脚本或网络依赖。</p>
+        </footer>
+      </div>
+    </main>
+  </div>
+
+  <a class="back-to-top" href="#top" aria-label="返回顶部" title="返回顶部">↑</a>
+
+  <script>
+    (() => {
+      const links = [...document.querySelectorAll('.toc a')];
+      const sections = links
+        .map(link => document.querySelector(link.getAttribute('href')))
+        .filter(Boolean);
+      const topButton = document.querySelector('.back-to-top');
+
+      const setActive = id => {
+        links.forEach(link => {
+          link.classList.toggle('active', link.getAttribute('href') === `#${id}`);
+        });
+      };
+
+      if ('IntersectionObserver' in window) {
+        const observer = new IntersectionObserver(entries => {
+          const visible = entries
+            .filter(entry => entry.isIntersecting)
+            .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
+          if (visible[0]) setActive(visible[0].target.id);
+        }, { rootMargin: '-12% 0px -72% 0px', threshold: [0, 0.05, 0.25] });
+        sections.forEach(section => observer.observe(section));
+      }
+
+      const updateTopButton = () => {
+        topButton.classList.toggle('visible', window.scrollY > 700);
+      };
+      updateTopButton();
+      window.addEventListener('scroll', updateTopButton, { passive: true });
+    })();
+  </script>
+</body>
+</html>
